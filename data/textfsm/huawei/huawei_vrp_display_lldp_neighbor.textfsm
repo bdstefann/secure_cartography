@@ -1,0 +1,23 @@
+Value Filldown LOCAL_INTERFACE (\S+)
+Value CHASSIS_ID ([0-9a-fA-F][0-9a-fA-F\-:.]+)
+Value NEIGHBOR_PORT_ID (\S+)
+Value NEIGHBOR_PORT_DESC (\S(?:[^\r\n]*\S)?)
+Value NEIGHBOR_NAME (\S+)
+Value NEIGHBOR_DESCRIPTION (\S(?:[^\r\n]*\S)?)
+Value MGMT_ADDRESS ([0-9a-fA-F][0-9a-fA-F:.]+)
+
+Start
+  ^\s*${LOCAL_INTERFACE}\s+has\s+\d+\s+neighbor
+  ^Port\s*:\s*${LOCAL_INTERFACE}\s*$$
+  ^\s*Chassis\s+ID\s*:\s*${CHASSIS_ID}\s*$$
+  ^\s*ChassisId\s*:\s*${CHASSIS_ID}\s*$$
+  ^\s*Port\s+ID\s*:\s*${NEIGHBOR_PORT_ID}\s*$$
+  ^\s*PortId\s*:\s*${NEIGHBOR_PORT_ID}\s*$$
+  ^\s*Port\s+[Dd]escription\s*:\s*${NEIGHBOR_PORT_DESC}\s*$$
+  ^\s*PortDesc\s*:\s*${NEIGHBOR_PORT_DESC}\s*$$
+  ^\s*System\s+[Nn]ame\s*:\s*${NEIGHBOR_NAME}\s*$$
+  ^\s*SysName\s*:\s*${NEIGHBOR_NAME}\s*$$
+  ^\s*System\s+[Dd]escription\s*:\s*${NEIGHBOR_DESCRIPTION}\s*$$
+  ^\s*SysDesc\s*:\s*${NEIGHBOR_DESCRIPTION}\s*$$
+  ^\s*Management\s+address\s+value\s*:\s*${MGMT_ADDRESS}\s*$$ -> Record
+  ^\s*MgmtAddr\s*:\s*${MGMT_ADDRESS}\s*$$ -> Record

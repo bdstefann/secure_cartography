@@ -353,6 +353,23 @@ VENDOR_PATTERNS = {
         r'fortigate',
         r'fortios',
     ],
+    DeviceVendor.HUAWEI: [
+        r'huawei',
+        r'\bvrp\b',
+        r'yunshan',
+        r'quidway',
+        r'cloudengine',
+        r'\bs5730\b',
+        r'\bs6730\b',
+        r'\bs5735\b',
+        r'\bs5720\b',
+        r'\bs6720\b',
+        r'\bs7700\b',
+        r'\bs9300\b',
+        r'\bce6800\b',
+        r'\bce12800\b',
+        r'\bar\d{3,4}\b',
+    ],
 }
 
 

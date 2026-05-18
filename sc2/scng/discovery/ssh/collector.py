@@ -33,6 +33,8 @@ class VendorCommands:
     cdp_template: Optional[str] = None
     lldp_command: Optional[str] = None
     lldp_template: Optional[str] = None
+    ndp_command: Optional[str] = None
+    ndp_template: Optional[str] = None
     system_command: Optional[str] = None
     interfaces_command: Optional[str] = None
 
@@ -64,6 +66,16 @@ VENDOR_COMMANDS: Dict[DeviceVendor, VendorCommands] = {
         system_command="uname -a",
         interfaces_command="ip link show",
     ),
+    DeviceVendor.HUAWEI: VendorCommands(
+        # Huawei VRP / YunShan switches (S5730, S6730, S5735, CloudEngine, AR).
+        # NDP is Huawei's proprietary CDP-equivalent; LLDP is standard.
+        lldp_command="display lldp neighbor",
+        lldp_template="huawei_vrp_display_lldp_neighbor",
+        ndp_command="display ndp",
+        ndp_template="huawei_vrp_display_ndp",
+        system_command="display version",
+        interfaces_command="display interface description",
+    ),
     # Add more vendors as needed
 }
 
@@ -84,7 +96,11 @@ def detect_vendor_from_output(output: str) -> DeviceVendor:
         DeviceVendor.JUNIPER: ['juniper', 'junos', 'srx', 'qfx'],
         DeviceVendor.PALOALTO: ['palo alto', 'pan-os'],
         DeviceVendor.FORTINET: ['fortinet', 'fortigate', 'fortios'],
-        DeviceVendor.HUAWEI: ['huawei', 'vrp'],
+        DeviceVendor.HUAWEI: [
+            'huawei', 'vrp', 'yunshan', 'quidway', 'cloudengine',
+            's5730', 's6730', 's5735', 's5720', 's6720', 's7700', 's9300',
+            'ce6800', 'ce12800',
+        ],
         DeviceVendor.HP: ['hewlett', 'procurve', 'aruba', 'comware'],
         DeviceVendor.LINUX: ['linux', 'ubuntu', 'debian', 'centos', 'red hat', 'rhel', 'fedora', 'rocky', 'gnu/linux'],
     }
@@ -172,6 +188,7 @@ class SSHCollector:
         vendor_hint: Optional[DeviceVendor] = None,
         collect_cdp: bool = True,
         collect_lldp: bool = True,
+        collect_ndp: bool = True,
         debug: bool = False,
     ) -> SSHCollectorResult:
         """
@@ -272,6 +289,17 @@ class SSHCollector:
                     )
                     neighbors.extend(lldp_neighbors)
                     logger.debug(f"LLDP complete: {len(lldp_neighbors)} neighbors")
+
+                # Collect NDP (Huawei only)
+                if collect_ndp and commands.ndp_command:
+                    if debug:
+                        print(f"[DEBUG] === PHASE: NDP collection ===")
+                    logger.debug("=== PHASE: NDP collection ===")
+                    ndp_neighbors = self._collect_ndp(
+                        client, commands, raw_output, errors, debug=debug
+                    )
+                    neighbors.extend(ndp_neighbors)
+                    logger.debug(f"NDP complete: {len(ndp_neighbors)} neighbors")
 
                 logger.debug("=== PHASE: Disconnecting ===")
 
@@ -457,6 +485,89 @@ class SSHCollector:
             logger.warning(f"LLDP collection failed: {e}")
 
         return neighbors
+
+    def _collect_ndp(
+        self,
+        client: SSHClient,
+        commands: VendorCommands,
+        raw_output: Dict[str, str],
+        errors: List[str],
+        debug: bool = False,
+    ) -> List[Neighbor]:
+        """Collect Huawei NDP neighbors via SSH."""
+        neighbors = []
+
+        try:
+            if debug:
+                print(f"[DEBUG NDP] Sending command: {commands.ndp_command}")
+            logger.debug(f"Sending NDP command: {commands.ndp_command}")
+            output = client.execute_command(commands.ndp_command)
+            if debug:
+                print(f"[DEBUG NDP] Command returned {len(output)} bytes")
+                print(f"[DEBUG NDP] First 500 chars:\n{output[:500]}")
+            raw_output['ndp'] = output
+
+            if debug:
+                print(f"[DEBUG NDP] Parsing with template: {commands.ndp_template}")
+            result = self.parser.parse(output, commands.ndp_template)
+            if debug:
+                print(f"[DEBUG NDP] Parse result: success={result.success}, "
+                      f"records={result.record_count}, error={result.error}")
+
+            if result.success and result.records:
+                for i, record in enumerate(result.records):
+                    if debug:
+                        print(f"[DEBUG NDP] Record {i+1}: {record}")
+                    neighbor = self._ndp_record_to_neighbor(record)
+                    if neighbor:
+                        neighbors.append(neighbor)
+            else:
+                if debug:
+                    print(f"[DEBUG NDP] Parsing failed: {result.error}")
+                logger.debug(f"NDP parsing failed or no records: {result.error}")
+
+        except Exception as e:
+            if debug:
+                print(f"[DEBUG NDP] Exception: {e}")
+            errors.append(f"NDP collection failed: {e}")
+            logger.warning(f"NDP collection failed: {e}")
+
+        return neighbors
+
+    def _ndp_record_to_neighbor(self, record: Dict[str, Any]) -> Optional[Neighbor]:
+        """Convert NDP TextFSM record to Neighbor object."""
+        remote_device = (
+            record.get('NEIGHBOR_NAME') or
+            record.get('DEVICE_ID') or
+            record.get('SYSTEM_NAME')
+        )
+        local_interface = (
+            record.get('LOCAL_INTERFACE') or
+            record.get('LOCAL_PORT')
+        )
+        remote_interface = (
+            record.get('NEIGHBOR_INTERFACE') or
+            record.get('REMOTE_PORT') or
+            record.get('PORT_ID')
+        )
+        remote_ip = (
+            record.get('MGMT_ADDRESS') or
+            record.get('MANAGEMENT_IP') or
+            record.get('REMOTE_IP')
+        )
+
+        if not remote_device or not local_interface:
+            return None
+
+        return Neighbor(
+            local_interface=local_interface,
+            remote_device=remote_device,
+            remote_interface=remote_interface or "",
+            protocol=NeighborProtocol.NDP,
+            remote_ip=remote_ip if remote_ip else None,
+            remote_platform=record.get('PLATFORM'),
+            remote_description=record.get('VERSION') or record.get('SOFTWARE'),
+        )
 
     def _cdp_record_to_neighbor(self, record: Dict[str, Any]) -> Optional[Neighbor]:
         """Convert CDP TextFSM record to Neighbor object."""

@@ -63,6 +63,7 @@ from .snmp import (
     get_interface_table,
     get_cdp_neighbors,
     get_lldp_neighbors,
+    get_ndp_neighbors,
     get_arp_table,
     lookup_ip_by_mac,
     get_sys_name,
@@ -976,6 +977,23 @@ class DiscoveryEngine:
             except Exception as e:
                 device.discovery_errors.append(f"CDP collection failed: {e}")
 
+        # Collect NDP neighbors (Huawei only - proprietary CDP equivalent)
+        if device.vendor == DeviceVendor.HUAWEI:
+            self._vprint("Collecting NDP neighbors (Huawei)...", 2)
+            try:
+                ndp_neighbors = await get_ndp_neighbors(
+                    device_ip, auth, interface_dict, self.snmp_engine,
+                    timeout=self.default_timeout, verbose=self.verbose
+                )
+                for n in ndp_neighbors:
+                    if n.remote_device and domains:
+                        normalized = extract_hostname(n.remote_device, domains)
+                        if normalized:
+                            n.remote_device = normalized
+                    device.add_neighbor(n)
+            except Exception as e:
+                device.discovery_errors.append(f"NDP collection failed: {e}")
+
         # Collect LLDP neighbors (all vendors)
         self._vprint("Collecting LLDP neighbors...", 2)
         try:
@@ -1067,6 +1085,13 @@ class DiscoveryEngine:
             await self._write_json_file(
                 lldp_file,
                 [n.to_dict() for n in device.lldp_neighbors]
+            )
+
+        if device.ndp_neighbors:
+            ndp_file = device_dir / 'ndp.json'
+            await self._write_json_file(
+                ndp_file,
+                [n.to_dict() for n in device.ndp_neighbors]
             )
 
     # =========================================================================

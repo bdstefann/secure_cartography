@@ -29,6 +29,7 @@ class NeighborProtocol(str, Enum):
     """Neighbor discovery protocol."""
     CDP = "cdp"
     LLDP = "lldp"
+    NDP = "ndp"  # Huawei Neighbor Discovery Protocol (HW proprietary)
     
 
 class InterfaceStatus(str, Enum):
@@ -189,6 +190,31 @@ class Neighbor:
             raw_index=raw_index,
         )
 
+    @classmethod
+    def from_ndp(
+        cls,
+        local_interface: str,
+        device_id: str,
+        remote_port: str,
+        ip_address: Optional[str] = None,
+        platform: Optional[str] = None,
+        version: Optional[str] = None,
+        local_if_index: Optional[int] = None,
+        raw_index: Optional[str] = None,
+    ) -> 'Neighbor':
+        """Create Neighbor from Huawei NDP data."""
+        return cls(
+            local_interface=local_interface,
+            local_interface_index=local_if_index,
+            remote_device=device_id,
+            remote_interface=remote_port,
+            remote_ip=ip_address,
+            remote_platform=platform,
+            remote_description=version,
+            protocol=NeighborProtocol.NDP,
+            raw_index=raw_index,
+        )
+
 
 @dataclass
 class Device:
@@ -251,6 +277,11 @@ class Device:
     def lldp_neighbors(self) -> List[Neighbor]:
         """Get only LLDP neighbors."""
         return [n for n in self.neighbors if n.protocol == NeighborProtocol.LLDP]
+
+    @property
+    def ndp_neighbors(self) -> List[Neighbor]:
+        """Get only Huawei NDP neighbors."""
+        return [n for n in self.neighbors if n.protocol == NeighborProtocol.NDP]
 
     @property
     def interface_by_index(self) -> Dict[int, Interface]:

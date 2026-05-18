@@ -59,6 +59,7 @@ from .collectors import (
     get_interface_table_extended,
     get_cdp_neighbors,
     get_lldp_neighbors,
+    get_ndp_neighbors,
     get_arp_table,
     lookup_ip_by_mac,
 )
@@ -93,6 +94,7 @@ __all__ = [
     'get_interface_table_extended',
     'get_cdp_neighbors',
     'get_lldp_neighbors',
+    'get_ndp_neighbors',
     'get_arp_table',
     'lookup_ip_by_mac',
 ]

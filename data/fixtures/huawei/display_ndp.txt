@@ -1,0 +1,20 @@
+<HW-S6730>display ndp
+Interface: GigabitEthernet0/0/1
+       Status: Enabled, Pkts Snd: 100, Pkts Rvd: 99, Pkts Err: 0
+       Neighbor 1:
+       MAC Address       : 00e0-fc12-3456
+       Vendor:HuaWei  HostName: HW-CORE-01
+       Port Name      : GigabitEthernet0/0/24
+       Software Version : VRP (R) software, Version 5.170 (S6720 V200R019C10)
+       Hardware Version : VER A
+       Hold time : 180(s)
+
+Interface: GigabitEthernet0/0/2
+       Status: Enabled, Pkts Snd: 50, Pkts Rvd: 50, Pkts Err: 0
+       Neighbor 1:
+       MAC Address       : 00e0-fc99-aaaa
+       Vendor:HuaWei  HostName: HW-ACCESS-02
+       Port Name      : GigabitEthernet0/0/3
+       Software Version : VRP (R) software, Version 5.170 (S5730 V200R019C10)
+       Hardware Version : VER B
+       Hold time : 180(s)

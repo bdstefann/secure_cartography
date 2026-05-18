@@ -1,0 +1,9 @@
+Value VRP_VERSION (\S+)
+Value PLATFORM (\S+)
+Value SOFTWARE_VERSION (\S(?:[^\r\n]*\S)?)
+Value UPTIME (\S(?:[^\r\n]*\S)?)
+
+Start
+  ^\s*VRP\s+\(R\)\s+software,\s+Version\s+${VRP_VERSION}\s+\(${PLATFORM}\s+${SOFTWARE_VERSION}\)
+  ^\s*HUAWEI\s+${PLATFORM}\s+.*uptime\s+is\s+${UPTIME}\s*$$ -> Record
+  ^\s*\S+\s+${PLATFORM}\s+.*[Uu]ptime\s+is\s+${UPTIME}\s*$$ -> Record

@@ -1,0 +1,9 @@
+<HW-S6730>display version
+Huawei Versatile Routing Platform Software
+VRP (R) software, Version 5.170 (S6730 V200R019C10SPC500)
+Copyright (C) 2007-2020 Huawei Technologies Co., Ltd.
+HUAWEI S6730-S24X6Q Routing Switch uptime is 0 week, 5 days, 2 hours, 30 minutes
+
+ES1D2X16SSC0 0 :
+  PCB Version : VER.B
+  CPLD1 Version : 102

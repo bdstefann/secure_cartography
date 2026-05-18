@@ -28,7 +28,7 @@ Version 2 is a complete rewrite with a modernized architecture:
 | CLI | Basic                        | **Full-featured with test/discover/crawl commands**                    |
 | Progress Reporting | Callbacks                    | **Structured events for GUI integration**                              |
 | SNMP Support | None                         | **v2c and v3 (authPriv)**                                              |
-| Vendor Support | Cisco, Arista                | **+ Cisco, Arista and Juniper, Others fingerprinted based on sysdesc** |
+| Vendor Support | Cisco, Arista                | **+ Cisco, Arista, Juniper, Huawei (VRP/YunShan), Others fingerprinted via sysDescr** |
 | GUI | PyQt6                        | **PyQt6 with theme support (Cyber/Dark/Light)**                        |
 | Topology Viewer | External (yEd/Draw.io)       | **Embedded Cytoscape.js with vendor coloring, yEd & Draw.io export**   |
 | Security Analysis | None                         | **CVE vulnerability scanning via NIST NVD**                            |
@@ -40,7 +40,7 @@ Version 2 is a complete rewrite with a modernized architecture:
 
 ### Discovery Engine
 - **SNMP-first discovery** with automatic SSH fallback
-- **CDP and LLDP** neighbor detection across vendors
+- **CDP, LLDP and NDP** neighbor detection across vendors (NDP for Huawei VRP)
 - **Two-pass LLDP resolution** - correctly handles lldpLocPortNum vs ifIndex
 - **Bidirectional link validation** - only confirmed connections appear in topology
 - **Concurrent crawling** - discover 20+ devices simultaneously
@@ -61,7 +61,9 @@ Version 2 is a complete rewrite with a modernized architecture:
 - **Local CVE cache** - SQLite cache avoids repeated API calls
 - **Export reports** - CSV export with affected devices per CVE
 - **Device-centric view** - "Export by Device" shows CVE counts per device
-- **Multi-vendor support** - Cisco IOS/IOS-XE/NX-OS, Arista EOS, Juniper JUNOS, Palo Alto, Fortinet
+- **Multi-vendor support** - Cisco IOS/IOS-XE/NX-OS, Arista EOS, Juniper JUNOS, Huawei VRP V5/V8 + YunShan (S5730/S6730/S5735/CE/AR), Palo Alto, Fortinet
+
+See [`README_Huawei.md`](README_Huawei.md) for the Huawei-specific setup, NDP support, and lab validation steps.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/scottpeterman/secure_cartography/refs/heads/main/screenshots/sec_vuln.png" alt="Security Analysis - CVE Vulnerability Scanning" width="800">

@@ -391,6 +391,49 @@ class ARISTA:
 
 
 # =============================================================================
+# HUAWEI-NDP-MIB - Huawei Neighbor Discovery Protocol
+# =============================================================================
+
+class HUAWEI_NDP:
+    """
+    HUAWEI-NDP-MIB OIDs for NDP neighbor discovery.
+
+    NDP (Neighbor Discovery Protocol) is Huawei's proprietary alternative
+    to CDP. Supported on VRP-based devices (S5700/S5730/S6730/S7700/CE)
+    and YunShan-based S5735 switches.
+
+    Base: 1.3.6.1.4.1.2011.5.25.106 (hwNdp)
+
+    Cache Table Index: hwNdpCacheIfIndex.hwNdpCacheDeviceIndex
+    - hwNdpCacheIfIndex: Local interface ifIndex
+    - hwNdpCacheDeviceIndex: Arbitrary per-interface neighbor index
+
+    NOTE: HUAWEI-NDP-MIB column numbering is not universally consistent
+    across VRP versions. The OIDs below follow the most widely deployed
+    layout (V5/V8). If a particular switch responds with empty walks,
+    fall back to SSH-based 'display ndp' collection.
+    """
+    # Base OID
+    BASE = "1.3.6.1.4.1.2011.5.25.106"
+
+    # NDP Cache Table (neighbor information)
+    CACHE_TABLE = "1.3.6.1.4.1.2011.5.25.106.1.2"
+    CACHE_ENTRY = "1.3.6.1.4.1.2011.5.25.106.1.2.1"
+
+    # NDP Cache Entry columns
+    # Index: hwNdpCacheIfIndex.hwNdpCacheDeviceIndex
+    CACHE_ADDRESS_TYPE = "1.3.6.1.4.1.2011.5.25.106.1.2.1.1"  # Address type (1=IPv4)
+    CACHE_ADDRESS = "1.3.6.1.4.1.2011.5.25.106.1.2.1.4"       # IP address (binary)
+    CACHE_VERSION = "1.3.6.1.4.1.2011.5.25.106.1.2.1.5"       # Software version
+    CACHE_DEVICE_ID = "1.3.6.1.4.1.2011.5.25.106.1.2.1.6"     # Device hostname
+    CACHE_DEVICE_PORT = "1.3.6.1.4.1.2011.5.25.106.1.2.1.7"   # Remote port name
+    CACHE_PLATFORM = "1.3.6.1.4.1.2011.5.25.106.1.2.1.8"      # Platform string
+
+    # For MIB-based queries
+    MIB_NAME = "HUAWEI-NDP-MIB"
+
+
+# =============================================================================
 # Helper Functions
 # =============================================================================
 

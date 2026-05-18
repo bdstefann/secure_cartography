@@ -6,6 +6,7 @@ Individual collectors for different MIB data:
 - interfaces: IF-MIB interface table
 - cdp: CISCO-CDP-MIB neighbors
 - lldp: LLDP-MIB neighbors
+- ndp: HUAWEI-NDP-MIB neighbors
 - arp: IP-MIB ARP table
 """
 
@@ -33,6 +34,10 @@ from .lldp import (
     get_lldp_neighbors_raw,
 )
 
+from .ndp import (
+    get_ndp_neighbors,
+)
+
 from .arp import (
     get_arp_table,
     lookup_ip_by_mac,
@@ -56,6 +61,8 @@ __all__ = [
     # LLDP
     'get_lldp_neighbors',
     'get_lldp_neighbors_raw',
+    # NDP (Huawei)
+    'get_ndp_neighbors',
     # ARP
     'get_arp_table',
     'lookup_ip_by_mac',

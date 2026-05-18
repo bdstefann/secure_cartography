@@ -1,0 +1,34 @@
+<HW-S6730>display lldp neighbor
+GigabitEthernet0/0/1 has 1 neighbor(s):
+
+Neighbor index                   :1
+Chassis type                     :MAC address
+Chassis ID                       :00e0-fc12-3456
+Port ID type                     :Interface name
+Port ID                          :GigabitEthernet0/0/24
+Port description                 :Uplink-to-core
+System name                      :HW-CORE-01
+System description               :Huawei Versatile Routing Platform Software VRP (R) software, Version 5.170 (S6720 V200R019C10)
+System capabilities supported    :bridge router
+System capabilities enabled      :bridge router
+Management address type          :ipv4
+Management address value         :10.1.1.1
+Expired time                     :120 s
+Port VLAN ID(PVID)               :1
+
+GigabitEthernet0/0/2 has 1 neighbor(s):
+
+Neighbor index                   :1
+Chassis type                     :MAC address
+Chassis ID                       :00e0-fc99-aaaa
+Port ID type                     :Interface name
+Port ID                          :GigabitEthernet0/0/3
+Port description                 :access-port
+System name                      :HW-ACCESS-02
+System description               :S5730-S24X6Q Huawei Versatile Routing Platform Software VRP (R) software, Version 5.170
+System capabilities supported    :bridge
+System capabilities enabled      :bridge
+Management address type          :ipv4
+Management address value         :10.1.1.2
+Expired time                     :120 s
+Port VLAN ID(PVID)               :1

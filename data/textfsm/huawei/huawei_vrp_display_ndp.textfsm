@@ -1,0 +1,14 @@
+Value Filldown LOCAL_INTERFACE (\S+)
+Value CHASSIS_ID ([0-9a-fA-F][0-9a-fA-F\-:.]+)
+Value NEIGHBOR_NAME (\S+)
+Value NEIGHBOR_PORT_ID (\S+)
+Value VERSION (.+?)
+Value PLATFORM (.+?)
+
+Start
+  ^\s*Interface\s*:\s*${LOCAL_INTERFACE}\s*$$
+  ^\s*MAC\s+Address\s*:\s*${CHASSIS_ID}\s*$$
+  ^.*HostName\s*:\s*${NEIGHBOR_NAME}\s*$$
+  ^\s*Port\s+Name\s*:\s*${NEIGHBOR_PORT_ID}\s*$$
+  ^\s*Software\s+Version\s*:\s*${VERSION}\s*$$
+  ^\s*Hardware\s+Version\s*:\s*${PLATFORM}\s*$$ -> Record
