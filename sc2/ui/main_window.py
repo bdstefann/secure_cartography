@@ -45,6 +45,7 @@ class HeaderBar(QFrame):
 
     help_clicked = pyqtSignal()
     security_clicked = pyqtSignal()
+    config_push_clicked = pyqtSignal()
     theme_changed = pyqtSignal(ThemeName)
 
     def __init__(
@@ -92,6 +93,14 @@ class HeaderBar(QFrame):
         self.help_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.help_btn.clicked.connect(self.help_clicked.emit)
         layout.addWidget(self.help_btn)
+
+        # Config Push button
+        self.config_push_btn = QPushButton("⚡ CONFIG PUSH")
+        self.config_push_btn.setObjectName("configPushButton")
+        self.config_push_btn.setToolTip("Bulk SSH config push (Huawei / generic)")
+        self.config_push_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.config_push_btn.clicked.connect(self.config_push_clicked.emit)
+        layout.addWidget(self.config_push_btn)
 
         # Security analysis button
         self.security_btn = QPushButton("🔐 SECURITY")
@@ -382,6 +391,7 @@ class MainWindow(QMainWindow):
         self._security_window = None
         self._map_viewer_dialog = None
         self._help_dialog = None
+        self._config_push_dialog = None
 
         self._setup_ui()
         self._connect_signals()
@@ -515,6 +525,9 @@ class MainWindow(QMainWindow):
         # Security analysis button
         self.header.security_clicked.connect(self._on_security_clicked)
 
+        # Config Push button
+        self.header.config_push_clicked.connect(self._on_config_push_clicked)
+
         # Action buttons
         self.action_buttons.start_crawl_clicked.connect(self._on_start_crawl)
         self.action_buttons.test_single_clicked.connect(self._on_test_single)
@@ -629,6 +642,10 @@ class MainWindow(QMainWindow):
         if self._security_window and self._security_window.isVisible():
             self._security_window.apply_theme(theme)
 
+        # Sync config push dialog if open
+        if self._config_push_dialog and self._config_push_dialog.isVisible():
+            self._config_push_dialog.apply_theme(theme)
+
         # Sync map viewer if open
         if self._map_viewer_dialog and self._map_viewer_dialog.isVisible():
             self._map_viewer_dialog.apply_theme(theme)
@@ -667,6 +684,21 @@ class MainWindow(QMainWindow):
         else:
             self._security_window.raise_()
             self._security_window.activateWindow()
+
+    def _on_config_push_clicked(self):
+        """Launch the Config Push tool window."""
+        from .widgets.config_pusher.dialog import ConfigPusherDialog
+        if self._config_push_dialog is None or not self._config_push_dialog.isVisible():
+            self._config_push_dialog = ConfigPusherDialog(
+                vault=self.vault,
+                theme_manager=self.theme_manager,
+                parent=None,  # Independent window
+            )
+            self._config_push_dialog.show()
+            self.log_panel.info("Config Push window opened")
+        else:
+            self._config_push_dialog.raise_()
+            self._config_push_dialog.activateWindow()
 
     def _on_credentials_changed(self):
         """Handle credentials being added/removed/modified."""
