@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QDialog, QTabWidget, QVBoxLayout
+from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtWidgets import QDialog, QScrollArea, QTabWidget, QVBoxLayout, QWidget
 
 from sc2.scng.tools.history_db import ConfigHistoryDB
 
@@ -38,9 +39,18 @@ class ConfigPusherDialog(QDialog):
         parent=None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Config Push")
-        self.setWindowFlag(Qt.WindowType.Window, True)
-        self.resize(1200, 820)
+        self.setWindowTitle("Config Push  (F11 fullscreen, Esc exits)")
+        # Add minimize + maximize + close to the title bar (QDialog has only
+        # close by default on Windows).
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowMinMaxButtonsHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
+        # Smaller default so it fits a 1366x768 laptop screen with room to
+        # spare; user can maximize / fullscreen if they want more.
+        self.resize(1100, 680)
+        self.setMinimumSize(720, 480)
 
         self.vault = vault
         self.theme_manager = theme_manager
@@ -53,13 +63,19 @@ class ConfigPusherDialog(QDialog):
         self.history_panel = HistoryPanel(self.history_db, theme_manager)
         self.templates_panel = TemplatesPanel(self.history_db, theme_manager)
 
-        self.tabs.addTab(self.push_panel, "Push")
-        self.tabs.addTab(self.history_panel, "History")
-        self.tabs.addTab(self.templates_panel, "Templates")
+        # Each tab gets its own scroll area so the inner widget can be larger
+        # than the visible viewport (laptop screens / restored window sizes).
+        self.tabs.addTab(_in_scroll(self.push_panel), "Push")
+        self.tabs.addTab(_in_scroll(self.history_panel), "History")
+        self.tabs.addTab(_in_scroll(self.templates_panel), "Templates")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.tabs)
+
+        # F11 toggles fullscreen; Esc leaves fullscreen.
+        QShortcut(QKeySequence("F11"), self, activated=self._toggle_fullscreen)
+        QShortcut(QKeySequence("Escape"), self, activated=self._exit_fullscreen)
 
         # Wire cross-panel signals
         self.push_panel.push_finished.connect(lambda _id: self.history_panel.refresh())
@@ -68,7 +84,7 @@ class ConfigPusherDialog(QDialog):
         self.templates_panel.use_requested.connect(self._on_use_template)
 
         if theme_manager is not None:
-            self.apply_theme(theme_manager.colors)
+            self.apply_theme(theme_manager.theme)
 
     # ------------------------------------------------------------------
     # Theme
@@ -118,13 +134,13 @@ class ConfigPusherDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _on_save_template_requested(self, block: str) -> None:
-        self.tabs.setCurrentWidget(self.templates_panel)
+        self.tabs.setCurrentIndex(2)
         self.templates_panel.open_save_dialog_with_block(block)
 
     def _on_reuse_run(self, hosts, commands) -> None:
         self.push_panel.set_initial_hosts(hosts)
         self.push_panel.set_initial_block(commands)
-        self.tabs.setCurrentWidget(self.push_panel)
+        self.tabs.setCurrentIndex(0)
 
     def _on_use_template(self, block: str) -> None:
         commands = [
@@ -132,4 +148,35 @@ class ConfigPusherDialog(QDialog):
             if line.strip() and not line.lstrip().startswith("#")
         ]
         self.push_panel.set_initial_block(commands)
-        self.tabs.setCurrentWidget(self.push_panel)
+        self.tabs.setCurrentIndex(0)
+
+    # ------------------------------------------------------------------
+    # Fullscreen
+    # ------------------------------------------------------------------
+
+    def _toggle_fullscreen(self) -> None:
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+
+    def _exit_fullscreen(self) -> None:
+        if self.isFullScreen():
+            self.showNormal()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _in_scroll(widget: QWidget) -> QScrollArea:
+    """Wrap `widget` in a frameless QScrollArea so the dialog scrolls
+    instead of clipping content when the window is smaller than the panel."""
+    scroll = QScrollArea()
+    scroll.setObjectName("configPusherScroll")
+    scroll.setWidget(widget)
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    return scroll

@@ -9,12 +9,12 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QFrame, QWidget, QTabWidget, QFormLayout,
     QComboBox, QSpinBox, QTextEdit, QFileDialog, QMessageBox,
-    QCheckBox, QGroupBox
+    QCheckBox, QGroupBox, QScrollArea
 )
 
 from ..themes import ThemeColors, ThemeManager, ThemeName
@@ -47,12 +47,24 @@ class CredentialDialog(QDialog):
         self.edit_mode = edit_mode
         self.edit_data = edit_data or {}
 
-        self.setWindowTitle("Edit Credential" if edit_mode else "Add Credential")
-        self.setMinimumSize(520, 640)
+        title_base = "Edit Credential" if edit_mode else "Add Credential"
+        self.setWindowTitle(f"{title_base}  (F11 fullscreen, Esc exits)")
+        # Min size that fits on a 1366x768 laptop
+        self.setMinimumSize(520, 420)
+        # Sensible default; resize on small screens scrolls instead of clipping
+        self.resize(560, 700)
+        # Title bar gets minimize + maximize so the user can take the whole
+        # screen if they need to (long credential form on a laptop)
         self.setWindowFlags(
-            Qt.WindowType.Dialog |
-            Qt.WindowType.WindowCloseButtonHint
+            Qt.WindowType.Dialog
+            | Qt.WindowType.WindowCloseButtonHint
+            | Qt.WindowType.WindowMinMaxButtonsHint
         )
+
+        # F11 toggles fullscreen; Esc is handled in keyPressEvent so it can
+        # still close the dialog when we are NOT in fullscreen (default
+        # QDialog behaviour).
+        QShortcut(QKeySequence("F11"), self, activated=self._toggle_fullscreen)
 
         self._setup_ui()
         self._apply_theme()
@@ -61,19 +73,51 @@ class CredentialDialog(QDialog):
             self._populate_form(edit_data)
 
     def _setup_ui(self):
-        """Build the dialog UI."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(16)
+        """Build the dialog UI.
 
-        # Header
+        Layout:
+          ┌────────────────────────────────────┐
+          │ Header                             │
+          │ ┌────────────────────────────────┐ │  ← scroll area
+          │ │ General group                  │ │     (everything between
+          │ │ Tabs (SSH/SNMPv2c/SNMPv3)      │ │      header and buttons)
+          │ │                                │ │
+          │ └────────────────────────────────┘ │
+          │ [Cancel]                  [Save]   │  ← buttons stay visible
+          └────────────────────────────────────┘
+        """
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 20, 20, 20)
+        outer.setSpacing(16)
+
+        # Header (always visible at top)
         header = QLabel("Edit Credential" if self.edit_mode else "Add New Credential")
         header.setObjectName("dialogHeader")
         font = header.font()
         font.setPointSize(14)
         font.setBold(True)
         header.setFont(font)
-        layout.addWidget(header)
+        outer.addWidget(header)
+
+        # Scroll area holds the form so the dialog shrinks gracefully on
+        # small laptops; Cancel/Save remain pinned to the bottom.
+        self._scroll_area = QScrollArea()
+        self._scroll_area.setObjectName("credDialogScroll")
+        self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        scroll_content = QWidget()
+        scroll_content.setObjectName("credDialogScrollContent")
+        layout = QVBoxLayout(scroll_content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(16)
+        self._scroll_area.setWidget(scroll_content)
+        outer.addWidget(self._scroll_area, 1)
 
         # Common fields section
         common_group = QGroupBox("General")
@@ -288,10 +332,35 @@ class CredentialDialog(QDialog):
         self.save_btn.clicked.connect(self._on_save)
         button_layout.addWidget(self.save_btn)
 
-        layout.addLayout(button_layout)
+        # Buttons pinned to the bottom of the dialog, OUTSIDE the scroll area,
+        # so they stay visible no matter how short the window is.
+        outer.addLayout(button_layout)
 
         # Initial state update
         self._update_snmpv3_state()
+
+    # ------------------------------------------------------------------
+    # Fullscreen handling
+    # ------------------------------------------------------------------
+
+    def _toggle_fullscreen(self):
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+
+    def _exit_fullscreen(self):
+        if self.isFullScreen():
+            self.showNormal()
+
+    def keyPressEvent(self, event):
+        # Esc exits fullscreen first if we are in it; only when in normal
+        # window mode does it fall through to the default QDialog reject.
+        if event.key() == Qt.Key.Key_Escape and self.isFullScreen():
+            self.showNormal()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _update_snmpv3_state(self):
         """Update SNMPv3 field states based on protocol selections."""

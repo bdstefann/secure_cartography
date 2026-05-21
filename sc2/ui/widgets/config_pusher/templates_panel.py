@@ -53,7 +53,7 @@ class TemplatesPanel(QWidget):
 
         self._setup_ui()
         if theme_manager is not None:
-            self.apply_theme(theme_manager.colors)
+            self.apply_theme(theme_manager.theme)
         self.refresh()
 
     def _setup_ui(self) -> None:

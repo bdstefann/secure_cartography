@@ -30,6 +30,7 @@ from .widgets import (
 from .widgets.credentials_panel import CredentialsPanel
 from .widgets.map_viewer_dialog import MapViewerDialog
 from .widgets.security_widget import SecurityWidget
+from .widgets.config_pusher.dialog import ConfigPusherDialog
 from .help_dialog import HelpDialog
 from ..scng.discovery.discovery_controller import DiscoveryController
 
@@ -687,7 +688,6 @@ class MainWindow(QMainWindow):
 
     def _on_config_push_clicked(self):
         """Launch the Config Push tool window."""
-        from .widgets.config_pusher.dialog import ConfigPusherDialog
         if self._config_push_dialog is None or not self._config_push_dialog.isVisible():
             self._config_push_dialog = ConfigPusherDialog(
                 vault=self.vault,

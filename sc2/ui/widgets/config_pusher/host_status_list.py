@@ -68,6 +68,10 @@ class HostRow(QWidget):
         self.duration_s: Optional[float] = None
         self._theme: Optional[ThemeColors] = None
 
+        # Force a visible row height so text doesn't get squished when the
+        # parent QListWidget assigns a tight sizeHint.
+        self.setMinimumHeight(28)
+
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 4, 8, 4)
         lay.setSpacing(8)

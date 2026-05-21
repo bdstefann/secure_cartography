@@ -71,7 +71,7 @@ class PushPanel(QWidget):
 
         self._setup_ui()
         if theme_manager is not None:
-            self.apply_theme(theme_manager.colors)
+            self.apply_theme(theme_manager.theme)
         self.refresh_credentials()
 
     # ------------------------------------------------------------------
@@ -113,30 +113,40 @@ class PushPanel(QWidget):
         controls.addWidget(self.export_btn)
         layout.addLayout(controls)
 
-        # Progress
-        prog_row = QHBoxLayout()
+        # Progress — bar takes the full width on its own row, label sits
+        # below on its own row so it stays visible no matter how narrow the
+        # dialog gets. (Previously the label was next to the bar and slid
+        # off the right edge on small windows.)
         self.progress = QProgressBar()
         self.progress.setObjectName("pushProgress")
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
+        self.progress.setMinimumHeight(20)
+        layout.addWidget(self.progress)
+
         self.progress_label = QLabel("Idle")
         self.progress_label.setObjectName("pushProgressLabel")
-        prog_row.addWidget(self.progress, 1)
-        prog_row.addWidget(self.progress_label)
-        layout.addLayout(prog_row)
+        self.progress_label.setWordWrap(True)
+        layout.addWidget(self.progress_label)
 
         # Master-detail: host list + transcript
         self.host_list = HostStatusList()
         self.host_list.host_selected.connect(self._on_host_selected)
         self.transcript = TranscriptView()
 
-        split = QSplitter(Qt.Orientation.Horizontal)
-        split.addWidget(self.host_list)
-        split.addWidget(self.transcript)
-        split.setStretchFactor(0, 1)
-        split.setStretchFactor(1, 3)
-        split.setSizes([280, 700])
-        layout.addWidget(split, 1)
+        self.results_split = QSplitter(Qt.Orientation.Horizontal)
+        self.results_split.addWidget(self.host_list)
+        self.results_split.addWidget(self.transcript)
+        self.results_split.setStretchFactor(0, 1)
+        self.results_split.setStretchFactor(1, 3)
+        self.results_split.setSizes([280, 700])
+        # Give the splitter a real minimum height. Without this it collapses
+        # to ~0 inside the dialog's QScrollArea (form sections eat all
+        # space), so the user can't see the progress label or transcripts
+        # after Start. With this minimum the scroll bar kicks in and the
+        # results stay visible.
+        self.results_split.setMinimumHeight(360)
+        layout.addWidget(self.results_split, 1)
 
     def _build_mode_group(self) -> QGroupBox:
         box = QGroupBox("Mode")
@@ -535,6 +545,20 @@ class PushPanel(QWidget):
         self._worker.device_finished.connect(self._on_device_finished)
         self._worker.all_done.connect(self._on_all_done)
         self._worker.start()
+        # Bring the results area into view so the user immediately sees
+        # the progress / host list / transcript instead of just the form.
+        self._scroll_results_into_view()
+
+    def _scroll_results_into_view(self) -> None:
+        """If we're inside a QScrollArea, scroll it so the results splitter
+        is fully visible. No-op when not wrapped in a scroll area."""
+        from PyQt6.QtWidgets import QScrollArea
+        ancestor = self.parent()
+        while ancestor is not None:
+            if isinstance(ancestor, QScrollArea):
+                ancestor.ensureWidgetVisible(self.results_split, 0, 0)
+                return
+            ancestor = ancestor.parent()
 
     def _on_stop_clicked(self) -> None:
         if self._worker is None:
