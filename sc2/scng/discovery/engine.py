@@ -1440,8 +1440,6 @@ class DiscoveryEngine:
         # Helper to check if reverse claim exists
         def has_reverse_claim(device_canonical: str, local_if: str,
                             peer_canonical: str, remote_if: str) -> bool:
-            return True
-
             """Check if peer claims the reverse connection."""
             reverse_key = (peer_canonical, remote_if)
             if reverse_key not in all_claims:
