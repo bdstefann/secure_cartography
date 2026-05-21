@@ -54,6 +54,7 @@ class PushPanel(QWidget):
     """Single tab: configure + run + watch a parallel config push."""
 
     push_finished = pyqtSignal(int)        # history id of the completed run
+    save_template_requested = pyqtSignal(str)  # current command block as string
 
     def __init__(self, vault, theme_manager, history_db: ConfigHistoryDB, parent=None):
         super().__init__(parent)
@@ -204,9 +205,11 @@ class PushPanel(QWidget):
         toolbar = QHBoxLayout()
         self.load_cmds_btn = QPushButton("Load .txt…")
         self.load_cmds_btn.clicked.connect(self._on_load_commands_clicked)
-        # Save as template button is wired in iter 6 (with TemplatesPanel)
+        self.save_template_btn = QPushButton("Save as template…")
+        self.save_template_btn.clicked.connect(self._on_save_template_clicked)
         self.cmds_count_label = QLabel("0 lines")
         toolbar.addWidget(self.load_cmds_btn)
+        toolbar.addWidget(self.save_template_btn)
         toolbar.addStretch(1)
         toolbar.addWidget(self.cmds_count_label)
         lay.addLayout(toolbar)
@@ -397,6 +400,14 @@ class PushPanel(QWidget):
             QMessageBox.warning(self, "Load failed", str(exc))
             return
         self.hosts_edit.setPlainText(content)
+
+    def _on_save_template_clicked(self) -> None:
+        block = self.cmds_edit.toPlainText().strip()
+        if not block:
+            QMessageBox.warning(self, "Save template",
+                                "No commands to save.")
+            return
+        self.save_template_requested.emit(block)
 
     def _on_load_commands_clicked(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
