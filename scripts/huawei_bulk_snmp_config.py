@@ -1,6 +1,10 @@
 """
 Bulk SNMP-view configurator for Huawei VRP / YunShan switches.
 
+Thin CLI wrapper over sc2.scng.tools.config_pusher. The actual SSH push
+logic lives in that shared module so the GUI Config Push widget can
+reuse it without duplication.
+
 Reads a list of IPs from a hosts file and applies — over SSH, in parallel —
 the SNMP view configuration that exposes LLDP-MIB and HUAWEI-NDP-MIB to a
 given community, so Secure Cartography can discover neighbors.
@@ -36,8 +40,6 @@ import getpass
 import logging
 import os
 import sys
-import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
@@ -47,181 +49,14 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from sc2.scng.discovery.ssh.client import SSHClient, SSHClientConfig  # noqa: E402
+from sc2.scng.tools.config_pusher import (  # noqa: E402
+    DeviceResult,
+    apply_commands_to_device,
+    build_snmp_view_commands,
+    build_snmp_view_skip_check,
+    load_hosts,
+)
 
-logger = logging.getLogger("huawei_bulk_snmp")
-
-
-# ---------------------------------------------------------------------------
-# Config block builders
-# ---------------------------------------------------------------------------
-
-def build_view_config(
-    view_name: str,
-    community: str,
-    restricted: bool,
-) -> List[str]:
-    """Return the ordered list of VRP commands that build the SNMP view."""
-    if restricted:
-        # MIB-2 (internet) + LLDP (1.0.8802) + Huawei enterprise (1.3.6.1.4.1.2011)
-        subtree_cmds = [
-            f"snmp-agent mib-view included {view_name} internet",
-            f"snmp-agent mib-view included {view_name} 1.0.8802",
-            f"snmp-agent mib-view included {view_name} 1.3.6.1.4.1.2011",
-        ]
-    else:
-        subtree_cmds = [f"snmp-agent mib-view included {view_name} iso"]
-
-    return [
-        "system-view",
-        *subtree_cmds,
-        f"snmp-agent community read cipher {community} mib-view {view_name}",
-        "quit",
-    ]
-
-
-# ---------------------------------------------------------------------------
-# Per-device runner
-# ---------------------------------------------------------------------------
-
-@dataclass
-class DeviceResult:
-    host: str
-    status: str  # "ok" | "skipped" | "failed" | "dry-run"
-    message: str = ""
-    duration_s: float = 0.0
-    transcript: List[str] = field(default_factory=list)
-
-
-def already_configured(client: SSHClient, view_name: str, community: str) -> bool:
-    """Return True when the target community is already bound to view_name."""
-    out = client.execute_command("display snmp-agent community")
-    # The cipher form of community-string is masked in display output, so the
-    # safest match is "this view is referenced by some community line".
-    # Reading the full community plaintext is not always possible from CLI.
-    needle_view = f"Mib-view: {view_name}"
-    needle_view_alt = f"mib-view {view_name}"
-    return needle_view.lower() in out.lower() or needle_view_alt.lower() in out.lower()
-
-
-def apply_to_device(
-    host: str,
-    *,
-    username: str,
-    password: Optional[str],
-    key_file: Optional[str],
-    key_passphrase: Optional[str],
-    community: str,
-    view_name: str,
-    restricted: bool,
-    dry_run: bool,
-    save: bool,
-    timeout: int,
-    legacy_mode: bool,
-) -> DeviceResult:
-    """Apply the SNMP view config to a single device."""
-    started = time.time()
-    transcript: List[str] = []
-    cmds = build_view_config(view_name, community, restricted)
-    if save:
-        cmds_after_quit = ["save", "y"]
-    else:
-        cmds_after_quit = []
-
-    if dry_run:
-        transcript.extend(cmds + cmds_after_quit)
-        return DeviceResult(
-            host=host,
-            status="dry-run",
-            message=f"Would send {len(cmds) + len(cmds_after_quit)} commands",
-            duration_s=time.time() - started,
-            transcript=transcript,
-        )
-
-    cfg = SSHClientConfig(
-        host=host,
-        username=username,
-        password=password,
-        key_file=key_file,
-        key_passphrase=key_passphrase,
-        timeout=timeout,
-        legacy_mode=legacy_mode,
-    )
-
-    try:
-        with SSHClient(cfg) as client:
-            prompt = client.find_prompt()
-            client.set_expect_prompt(prompt)
-            client.disable_pagination()
-
-            if already_configured(client, view_name, community):
-                return DeviceResult(
-                    host=host,
-                    status="skipped",
-                    message=f"View '{view_name}' already bound to a community",
-                    duration_s=time.time() - started,
-                )
-
-            for cmd in cmds:
-                out = client.execute_command(cmd)
-                transcript.append(f"$ {cmd}")
-                transcript.append(out)
-                if "error" in out.lower() and "% " in out:
-                    return DeviceResult(
-                        host=host,
-                        status="failed",
-                        message=f"Device rejected '{cmd}'",
-                        duration_s=time.time() - started,
-                        transcript=transcript,
-                    )
-
-            if save:
-                client.execute_command("save")
-                transcript.append("$ save")
-                # 'save' usually prompts y/n — fire the confirmation
-                client.execute_command("y")
-                transcript.append("$ y")
-
-            return DeviceResult(
-                host=host,
-                status="ok",
-                message="View applied",
-                duration_s=time.time() - started,
-                transcript=transcript,
-            )
-
-    except Exception as exc:
-        return DeviceResult(
-            host=host,
-            status="failed",
-            message=f"{type(exc).__name__}: {exc}",
-            duration_s=time.time() - started,
-            transcript=transcript,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Hosts file
-# ---------------------------------------------------------------------------
-
-def load_hosts(path: Path) -> List[str]:
-    if not path.exists():
-        raise FileNotFoundError(f"hosts file not found: {path}")
-    hosts: List[str] = []
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if not line:
-            continue
-        # Allow "ip,whatever" — keep only the IP token
-        host = line.split(",", 1)[0].strip()
-        if host:
-            hosts.append(host)
-    return hosts
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -289,9 +124,12 @@ def main() -> int:
         return 1
     print(f"Loaded {len(hosts)} hosts from {args.hosts}")
 
+    commands = build_snmp_view_commands(args.view_name, args.community, args.restricted)
+    check_command, skip_patterns = build_snmp_view_skip_check(args.view_name)
+
     if args.dry_run:
         print("\n=== DRY RUN: commands that would be sent ===")
-        for cmd in build_view_config(args.view_name, args.community, args.restricted):
+        for cmd in commands:
             print(f"  {cmd}")
         if args.save:
             print("  save")
@@ -307,19 +145,19 @@ def main() -> int:
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.parallel) as pool:
         future_to_host = {
             pool.submit(
-                apply_to_device,
+                apply_commands_to_device,
                 host,
                 username=args.ssh_username,
                 password=password,
                 key_file=str(args.ssh_key_file) if args.ssh_key_file else None,
                 key_passphrase=key_passphrase,
-                community=args.community,
-                view_name=args.view_name,
-                restricted=args.restricted,
-                dry_run=args.dry_run,
+                commands=commands,
                 save=args.save,
+                dry_run=args.dry_run,
                 timeout=args.timeout,
                 legacy_mode=args.legacy,
+                check_command=check_command,
+                skip_patterns=skip_patterns,
             ): host
             for host in hosts
         }
@@ -331,12 +169,13 @@ def main() -> int:
                 "skipped": "SKIP   ",
                 "failed": "FAILED ",
                 "dry-run": "DRY-RUN",
+                "cancelled": "CANCEL ",
             }.get(res.status, "?      ")
             print(f"  [{badge}] {res.host:<18}  ({res.duration_s:5.1f}s)  {res.message}")
 
     print()
     print("Summary:")
-    for status in ("ok", "skipped", "failed", "dry-run"):
+    for status in ("ok", "skipped", "failed", "dry-run", "cancelled"):
         count = sum(1 for r in results if r.status == status)
         if count:
             print(f"  {status:8s}: {count}")
