@@ -28,17 +28,35 @@ import getpass
 from pathlib import Path
 from typing import Optional, List
 
-from .vault import CredentialVault, VaultNotInitialized, DuplicateCredential
+from .vault import CredentialVault, VaultNotInitialized, DuplicateCredential, VaultLockedOut
 from .resolver import CredentialResolver, check_dependencies
 from .models import CredentialType, SNMPv3AuthProtocol, SNMPv3PrivProtocol
 from .encryption import InvalidPassword
 
 
-def get_vault_password(args: argparse.Namespace, prompt: str = "Vault password: ") -> str:
-    """Get vault password from args, env, or prompt."""
-    if hasattr(args, 'password') and args.password:
-        return args.password
+def unlock_vault(vault: 'CredentialVault', password: str) -> int:
+    """Unlock vault, printing a friendly message on failure.
 
+    Returns 0 on success, non-zero exit code suitable for the CLI on failure.
+    """
+    try:
+        vault.unlock(password)
+        return 0
+    except VaultLockedOut as e:
+        print(f"Error: {e}")
+        return 1
+    except InvalidPassword:
+        print("Error: Invalid vault password")
+        return 1
+
+
+def get_vault_password(args: argparse.Namespace, prompt: str = "Vault password: ") -> str:
+    """Get vault password from env or interactive prompt.
+
+    The previous `--password/-p` global flag was removed: passwords on argv
+    leak through `ps`, shell history, and pre-exec logging. Use
+    `SCNG_VAULT_PASSWORD` for scripting or accept the interactive prompt.
+    """
     env_pass = os.environ.get('SCNG_VAULT_PASSWORD')
     if env_pass:
         return env_pass
@@ -67,10 +85,6 @@ def main():
     parser.add_argument(
         '--vault-path', '-v',
         help='Path to vault database (default: ~/.scng/credentials.db)',
-    )
-    parser.add_argument(
-        '--password', '-p',
-        help='Vault password (or set SCNG_VAULT_PASSWORD)',
     )
 
     subparsers = parser.add_subparsers(dest='command', help='Command')
@@ -253,14 +267,12 @@ def handle_unlock(args: argparse.Namespace) -> int:
 
     password = get_vault_password(args)
 
-    try:
-        vault.unlock(password)
-        print("✓ Vault unlocked successfully")
-        vault.lock()
-        return 0
-    except InvalidPassword:
-        print("Error: Invalid password")
-        return 1
+    rc = unlock_vault(vault, password)
+    if rc != 0:
+        return rc
+    print("✓ Vault unlocked successfully")
+    vault.lock()
+    return 0
 
 
 def handle_add(args: argparse.Namespace) -> int:
@@ -278,11 +290,9 @@ def handle_add(args: argparse.Namespace) -> int:
 
     password = get_vault_password(args)
 
-    try:
-        vault.unlock(password)
-    except InvalidPassword:
-        print("Error: Invalid vault password")
-        return 1
+    rc = unlock_vault(vault, password)
+    if rc != 0:
+        return rc
 
     try:
         tags = args.tags.split(',') if args.tags else []
@@ -510,29 +520,27 @@ def handle_show(args: argparse.Namespace) -> int:
     # Show secrets if requested
     if args.reveal:
         password = get_vault_password(args)
-        try:
-            vault.unlock(password)
-            cred = vault.get_credential(name=args.name)
+        rc = unlock_vault(vault, password)
+        if rc != 0:
+            return rc
+        cred = vault.get_credential(name=args.name)
 
-            print()
-            print("Secrets:")
-            print("-" * 40)
+        print()
+        print("Secrets:")
+        print("-" * 40)
 
-            if hasattr(cred, 'password') and cred.password:
-                print(f"Password: {cred.password}")
-            if hasattr(cred, 'key_content') and cred.key_content:
-                print(f"SSH Key: (present, {len(cred.key_content)} bytes)")
-            if hasattr(cred, 'community'):
-                print(f"Community: {cred.community}")
-            if hasattr(cred, 'auth_password') and cred.auth_password:
-                print(f"Auth password: {cred.auth_password}")
-            if hasattr(cred, 'priv_password') and cred.priv_password:
-                print(f"Priv password: {cred.priv_password}")
+        if hasattr(cred, 'password') and cred.password:
+            print(f"Password: {cred.password}")
+        if hasattr(cred, 'key_content') and cred.key_content:
+            print(f"SSH Key: (present, {len(cred.key_content)} bytes)")
+        if hasattr(cred, 'community'):
+            print(f"Community: {cred.community}")
+        if hasattr(cred, 'auth_password') and cred.auth_password:
+            print(f"Auth password: {cred.auth_password}")
+        if hasattr(cred, 'priv_password') and cred.priv_password:
+            print(f"Priv password: {cred.priv_password}")
 
-            vault.lock()
-        except InvalidPassword:
-            print("Error: Invalid vault password")
-            return 1
+        vault.lock()
 
     print()
     return 0
@@ -589,11 +597,9 @@ def handle_test(args: argparse.Namespace) -> int:
 
     password = get_vault_password(args)
 
-    try:
-        vault.unlock(password)
-    except InvalidPassword:
-        print("Error: Invalid vault password")
-        return 1
+    rc = unlock_vault(vault, password)
+    if rc != 0:
+        return rc
 
     try:
         info = vault.get_credential_info(name=args.name)
@@ -653,11 +659,9 @@ def handle_discover(args: argparse.Namespace) -> int:
 
     password = get_vault_password(args)
 
-    try:
-        vault.unlock(password)
-    except InvalidPassword:
-        print("Error: Invalid vault password")
-        return 1
+    rc = unlock_vault(vault, password)
+    if rc != 0:
+        return rc
 
     try:
         cred_types = None
@@ -724,6 +728,9 @@ def handle_change_password(args: argparse.Namespace) -> int:
         vault.change_password(current, new_pass)
         print("✓ Password changed successfully")
         return 0
+    except VaultLockedOut as e:
+        print(f"Error: {e}")
+        return 1
     except InvalidPassword:
         print("Error: Invalid current password")
         return 1

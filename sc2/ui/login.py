@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 
 from .themes import ThemeColors, ThemeManager, ThemeName, fix_all_comboboxes, StyledComboBox
 from .settings import SettingsManager, get_settings
+from sc2.scng.creds.vault import VaultLockedOut
 
 
 class IconLabel(QLabel):
@@ -714,6 +715,11 @@ class LoginDialog(QDialog):
             self.vault_unlocked.emit(self.vault)
             self.accept()
 
+        except VaultLockedOut as e:
+            # Surface lockout messages verbatim so the user sees the cooldown.
+            self._show_error(str(e))
+            self.password_input.clear()
+            self.password_input.setFocus()
         except Exception as e:
             error_msg = str(e)
             if "Invalid" in error_msg or "password" in error_msg.lower():

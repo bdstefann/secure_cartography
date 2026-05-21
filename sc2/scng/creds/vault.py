@@ -18,9 +18,17 @@ import json
 import base64
 import sqlite3
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Iterator, Union
 from contextlib import contextmanager
+
+
+# Unlock rate limiting (applied at CredentialVault.unlock, not in CLI, so the
+# GUI is also protected). Persisted across process restarts via vault_metadata.
+UNLOCK_FAIL_THRESHOLD = 5            # First N failures are "free" (no cooldown)
+UNLOCK_LOCKOUT_BASE_SECONDS = 30     # Cooldown for the (threshold+1)-th failure
+UNLOCK_LOCKOUT_MAX_SECONDS = 900     # Cap so the vault is never permanently bricked
+UNLOCK_LOCKOUT_MULTIPLIER = 2        # Doubles per additional failure past threshold
 
 from .models import (
     CredentialType, CredentialInfo, CredentialSet,
@@ -54,6 +62,18 @@ class CredentialNotFound(VaultError):
 class DuplicateCredential(VaultError):
     """Raised when credential name already exists."""
     pass
+
+
+class VaultLockedOut(VaultError):
+    """Raised when too many failed unlock attempts triggered a cooldown."""
+
+    def __init__(self, seconds_remaining: int, fail_count: int):
+        self.seconds_remaining = seconds_remaining
+        self.fail_count = fail_count
+        super().__init__(
+            f"Vault locked out after {fail_count} failed unlock attempts. "
+            f"Try again in {seconds_remaining}s."
+        )
 
 
 class CredentialVault:
@@ -163,6 +183,10 @@ class CredentialVault:
         """
         Unlock vault with master password.
 
+        Failed attempts are counted in `vault_metadata` and trigger an
+        exponential cooldown once they cross UNLOCK_FAIL_THRESHOLD. The
+        cooldown persists across process restarts.
+
         Args:
             password: Master password.
 
@@ -171,10 +195,17 @@ class CredentialVault:
 
         Raises:
             VaultNotInitialized: If vault not initialized.
-            InvalidPassword: If password incorrect.
+            VaultLockedOut: If too many recent failures triggered a cooldown.
+            InvalidPassword: If password incorrect (after cooldown checks).
         """
         if not self.is_initialized:
             raise VaultNotInitialized("Vault not initialized")
+
+        # Enforce any active cooldown before doing crypto work
+        remaining = self._unlock_lockout_remaining_seconds()
+        if remaining > 0:
+            fail_count = int(self._db.get_vault_metadata("unlock_fail_count") or 0)
+            raise VaultLockedOut(remaining, fail_count)
 
         # Get stored metadata
         salt_b64 = self._db.get_vault_metadata("salt")
@@ -186,9 +217,55 @@ class CredentialVault:
         salt = base64.b64decode(salt_b64)
         password_hash = base64.b64decode(hash_b64)
 
-        # Unlock encryption
-        self._encryption.unlock(password, salt, password_hash)
+        try:
+            self._encryption.unlock(password, salt, password_hash)
+        except InvalidPassword:
+            self._record_unlock_failure()
+            raise
+
+        self._reset_unlock_counters()
         return True
+
+    def _unlock_lockout_remaining_seconds(self) -> int:
+        """Return remaining cooldown seconds, or 0 if no active lockout."""
+        locked_until_iso = self._db.get_vault_metadata("unlock_locked_until")
+        if not locked_until_iso:
+            return 0
+        try:
+            locked_until = datetime.fromisoformat(locked_until_iso)
+        except ValueError:
+            return 0
+        now = datetime.now(timezone.utc)
+        if locked_until.tzinfo is None:
+            locked_until = locked_until.replace(tzinfo=timezone.utc)
+        delta = (locked_until - now).total_seconds()
+        return max(0, int(delta))
+
+    def _record_unlock_failure(self) -> None:
+        """Increment the failure counter and arm a cooldown if threshold crossed."""
+        prev = int(self._db.get_vault_metadata("unlock_fail_count") or 0)
+        new_count = prev + 1
+        self._db.set_vault_metadata("unlock_fail_count", str(new_count))
+        self._db.set_vault_metadata(
+            "unlock_last_failure_at",
+            datetime.now(timezone.utc).isoformat(),
+        )
+
+        if new_count > UNLOCK_FAIL_THRESHOLD:
+            over = new_count - UNLOCK_FAIL_THRESHOLD - 1
+            cooldown = min(
+                UNLOCK_LOCKOUT_BASE_SECONDS * (UNLOCK_LOCKOUT_MULTIPLIER ** over),
+                UNLOCK_LOCKOUT_MAX_SECONDS,
+            )
+            locked_until = datetime.now(timezone.utc) + timedelta(seconds=cooldown)
+            self._db.set_vault_metadata(
+                "unlock_locked_until", locked_until.isoformat()
+            )
+
+    def _reset_unlock_counters(self) -> None:
+        """Clear failure tracking after a successful unlock."""
+        self._db.set_vault_metadata("unlock_fail_count", "0")
+        self._db.set_vault_metadata("unlock_locked_until", "")
 
     def lock(self) -> None:
         """Lock vault, clearing encryption key from memory."""
