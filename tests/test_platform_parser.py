@@ -1,0 +1,154 @@
+"""
+Tests for sc2.ui.widgets.security_widget.PlatformParser.
+
+The parser takes a free-form platform / sysDescr string and returns a
+ParsedPlatform with cpe_vendor / cpe_product / cpe_version fields that
+build a CPE 2.3 string for NVD queries. These tests pin the mapping for
+the four vendors with explicit CVE support today (Cisco, Arista, Juniper,
+Palo Alto, Fortinet) plus the generic-fallback contract.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from sc2.ui.widgets.security_widget import PlatformParser, ParsedPlatform
+
+
+@pytest.fixture
+def parser(tmp_path: Path) -> PlatformParser:
+    # Point custom-pattern loader at a non-existent file so each test sees
+    # only the DEFAULT_PATTERNS.
+    return PlatformParser(custom_patterns_path=tmp_path / "nonexistent.json")
+
+
+# -----------------------------------------------------------------------------
+# Cisco
+# -----------------------------------------------------------------------------
+
+def test_cisco_ios_15_2_parses_to_cpe(parser):
+    r = parser.parse("Cisco IOS Software Version 15.2(4)E10")
+    assert r.confidence == "high"
+    assert r.cpe_vendor == "cisco"
+    assert r.cpe_product == "ios"
+    # Cisco IOS versions contain parentheses, which CPE requires escaped
+    assert r.cpe_version == r"15.2\(4\)e10"
+    assert r.to_cpe() == r"cpe:2.3:o:cisco:ios:15.2\(4\)e10:*:*:*:*:*:*:*"
+
+
+def test_cisco_ios_xe_parses_to_cpe(parser):
+    # The IOS-XE regex requires "Software [,\s]+ Version" with no interjections.
+    # Real Catalyst 9k sysDescrs often advertise as plain "Cisco IOS Software"
+    # even on IOS-XE platforms, so this strict variant is what triggers the
+    # ios_xe CPE.
+    r = parser.parse("Cisco IOS-XE Software, Version 16.12.04")
+    assert r.confidence == "high"
+    assert r.cpe_vendor == "cisco"
+    assert r.cpe_product == "ios_xe"
+    assert "16.12.04" in r.cpe_version
+    assert r.to_cpe().startswith("cpe:2.3:o:cisco:ios_xe:")
+
+
+def test_cisco_nx_os_parses_to_cpe(parser):
+    r = parser.parse("Cisco NX-OS(tm) n9000, Software Version 9.3(8)")
+    assert r.cpe_vendor == "cisco"
+    assert r.cpe_product == "nx-os"
+    assert r.version.startswith("9.3(8)")
+
+
+# -----------------------------------------------------------------------------
+# Arista
+# -----------------------------------------------------------------------------
+
+def test_arista_eos_parses_to_cpe(parser):
+    r = parser.parse("Arista vEOS-lab EOS 4.33.1F")
+    assert r.confidence == "high"
+    assert r.cpe_vendor == "arista"
+    assert r.cpe_product == "eos"
+    assert r.cpe_version == "4.33.1f"
+    assert r.to_cpe() == "cpe:2.3:o:arista:eos:4.33.1f:*:*:*:*:*:*:*"
+
+
+def test_arista_eos_no_veos(parser):
+    r = parser.parse("Arista Networks EOS 4.31.2F")
+    assert r.cpe_vendor == "arista"
+    assert r.cpe_product == "eos"
+
+
+# -----------------------------------------------------------------------------
+# Juniper
+# -----------------------------------------------------------------------------
+
+def test_juniper_junos_parses_to_cpe(parser):
+    r = parser.parse("Juniper JUNOS 21.2R1.10")
+    assert r.confidence == "high"
+    assert r.cpe_vendor == "juniper"
+    assert r.cpe_product == "junos"
+    assert r.cpe_version.startswith("21.2r1")
+    assert r.to_cpe().startswith("cpe:2.3:o:juniper:junos:")
+
+
+# -----------------------------------------------------------------------------
+# Palo Alto / Fortinet (documented as supported)
+# -----------------------------------------------------------------------------
+
+def test_palo_alto_panos_parses(parser):
+    r = parser.parse("Palo Alto Networks PAN-OS 10.2.3")
+    assert r.cpe_vendor == "paloaltonetworks"
+    assert r.cpe_product == "pan-os"
+    assert "10.2.3" in r.cpe_version
+
+
+def test_fortinet_fortios_parses(parser):
+    r = parser.parse("Fortinet FortiOS v7.2.5")
+    assert r.cpe_vendor == "fortinet"
+    assert r.cpe_product == "fortios"
+    assert "7.2.5" in r.cpe_version
+
+
+# -----------------------------------------------------------------------------
+# Generic fallback contract
+# -----------------------------------------------------------------------------
+
+def test_empty_input_returns_low_confidence(parser):
+    r = parser.parse("")
+    assert r.confidence == "low"
+    assert r.cpe_vendor == ""
+    assert r.cpe_product == ""
+    assert r.to_cpe() == ""
+
+
+def test_unknown_string_uses_generic_parser(parser):
+    r = parser.parse("Some unknown gizmo running 9.9.9-beta")
+    # Generic fallback: no CPE, but version was extracted, vendor empty
+    assert r.confidence == "low"
+    assert r.cpe_vendor == ""
+    assert r.to_cpe() == ""
+    assert "9.9.9" in r.version
+
+
+def test_generic_parser_identifies_known_vendor_keyword(parser):
+    # Falls through DEFAULT_PATTERNS (no version match), then generic_parse
+    # extracts vendor by keyword
+    r = parser.parse("Juniper future product without recognisable version field")
+    assert r.confidence == "low"
+    assert r.vendor == "Juniper"
+    # No CPE generated by generic_parse — that requires a matched pattern
+    assert r.cpe_vendor == ""
+
+
+# -----------------------------------------------------------------------------
+# Confidence is correctly tagged on matched patterns
+# -----------------------------------------------------------------------------
+
+@pytest.mark.parametrize("descr, expected_cpe_vendor", [
+    ("Cisco IOS Software Version 15.2(4)E10", "cisco"),
+    ("Arista vEOS-lab EOS 4.33.1F", "arista"),
+    ("Juniper JUNOS 21.2R1.10", "juniper"),
+])
+def test_matched_patterns_have_high_confidence(parser, descr, expected_cpe_vendor):
+    r = parser.parse(descr)
+    assert r.confidence == "high"
+    assert r.cpe_vendor == expected_cpe_vendor
