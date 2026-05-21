@@ -22,6 +22,9 @@ the CLI script can stay a thin wrapper.
 
 from __future__ import annotations
 
+import concurrent.futures
+import re
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +38,11 @@ STATUS_SKIPPED = "skipped"
 STATUS_FAILED = "failed"
 STATUS_DRY_RUN = "dry-run"
 STATUS_CANCELLED = "cancelled"
+
+# Intermediate statuses emitted via on_status during a push (the GUI uses
+# these for the per-host indicator: pending -> connecting -> running -> final).
+STATUS_CONNECTING = "connecting"
+STATUS_RUNNING = "running"
 
 
 @dataclass
@@ -137,6 +145,7 @@ def apply_commands_to_device(
     skip_patterns: Optional[List[str]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
     on_transcript: Optional[Callable[[str], None]] = None,
+    on_status: Optional[Callable[[str], None]] = None,
 ) -> DeviceResult:
     """Push `commands` to a single device.
 
@@ -199,11 +208,16 @@ def apply_commands_to_device(
         legacy_mode=legacy_mode,
     )
 
+    if on_status is not None:
+        on_status(STATUS_CONNECTING)
+
     try:
         with SSHClient(cfg) as client:
             prompt = client.find_prompt()
             client.set_expect_prompt(prompt)
             client.disable_pagination()
+            if on_status is not None:
+                on_status(STATUS_RUNNING)
 
             if check_command and skip_patterns:
                 probe_out = client.execute_command(check_command)
@@ -248,3 +262,126 @@ def _looks_like_device_error(output: str) -> bool:
     """
     lowered = output.lower()
     return "error" in lowered and "% " in lowered
+
+
+# ---------------------------------------------------------------------------
+# Parallel orchestration — used by the CLI script and by the Qt PushWorker
+# ---------------------------------------------------------------------------
+
+_INVALID_FILENAME_CHARS = re.compile(r'[^A-Za-z0-9._-]')
+
+
+def _sanitize_host_for_filename(host: str) -> str:
+    """Make a host string safe for use as a filename component."""
+    return _INVALID_FILENAME_CHARS.sub("_", host) or "host"
+
+
+def _write_transcript(transcript_dir: Path, result: DeviceResult) -> None:
+    """Persist one device's transcript as a .txt under transcript_dir."""
+    transcript_dir.mkdir(parents=True, exist_ok=True)
+    out = transcript_dir / f"{_sanitize_host_for_filename(result.host)}.txt"
+    with out.open("w", encoding="utf-8") as fh:
+        fh.write(f"=== {result.host} [{result.status}] ({result.duration_s:.2f}s) ===\n")
+        fh.write(f"{result.message}\n\n")
+        for line in result.transcript:
+            fh.write(line)
+            if not line.endswith("\n"):
+                fh.write("\n")
+
+
+def run_push(
+    *,
+    hosts: List[str],
+    username: str,
+    password: Optional[str] = None,
+    key_file: Optional[str] = None,
+    key_passphrase: Optional[str] = None,
+    port: int = 22,
+    commands: List[str],
+    save: bool = False,
+    dry_run: bool = False,
+    parallel: int = 8,
+    timeout: int = 30,
+    legacy_mode: bool = False,
+    check_command: Optional[str] = None,
+    skip_patterns: Optional[List[str]] = None,
+    stop_on_first_failure: bool = False,
+    transcript_dir: Optional[Path] = None,
+    on_host_status: Optional[Callable[[str, str, str], None]] = None,
+    on_transcript: Optional[Callable[[str, str], None]] = None,
+    on_device_finished: Optional[Callable[[DeviceResult], None]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+) -> List[DeviceResult]:
+    """Apply `commands` to every host in parallel and return all results.
+
+    Callbacks fire from worker threads:
+      - on_host_status(host, status, message): emitted as the host moves
+        through "connecting" -> "running" -> final status. Wrap your slot
+        with Qt's queued connection when bridging to a UI thread.
+      - on_transcript(host, line): one line of transcript output.
+      - on_device_finished(result): final DeviceResult for that host.
+
+    stop_on_first_failure converts the first failed host into a soft
+    cancel for everyone still in flight; the failed host keeps its
+    STATUS_FAILED, the others land as STATUS_CANCELLED.
+
+    transcript_dir, if set, gets one <host>.txt per finished device.
+    """
+    external_cancel = cancel_check
+    fail_stop_event = threading.Event()
+
+    def _cancel_check() -> bool:
+        if external_cancel and external_cancel():
+            return True
+        return fail_stop_event.is_set()
+
+    def _run_one(host: str) -> DeviceResult:
+        def status_cb(status: str) -> None:
+            if on_host_status is not None:
+                on_host_status(host, status, "")
+
+        def transcript_cb(line: str) -> None:
+            if on_transcript is not None:
+                on_transcript(host, line)
+
+        result = apply_commands_to_device(
+            host,
+            username=username,
+            password=password,
+            key_file=key_file,
+            key_passphrase=key_passphrase,
+            port=port,
+            commands=commands,
+            save=save,
+            dry_run=dry_run,
+            timeout=timeout,
+            legacy_mode=legacy_mode,
+            check_command=check_command,
+            skip_patterns=skip_patterns,
+            cancel_check=_cancel_check,
+            on_transcript=transcript_cb,
+            on_status=status_cb,
+        )
+
+        if on_host_status is not None:
+            on_host_status(result.host, result.status, result.message)
+        if on_device_finished is not None:
+            on_device_finished(result)
+        if transcript_dir is not None:
+            try:
+                _write_transcript(transcript_dir, result)
+            except OSError:
+                pass
+
+        if stop_on_first_failure and result.status == STATUS_FAILED:
+            fail_stop_event.set()
+
+        return result
+
+    results: List[DeviceResult] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as pool:
+        future_to_host = {pool.submit(_run_one, h): h for h in hosts}
+        for fut in concurrent.futures.as_completed(future_to_host):
+            results.append(fut.result())
+
+    return results
