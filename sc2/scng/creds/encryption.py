@@ -34,8 +34,14 @@ PBKDF2_ITERATIONS = 480_000
 # Salt size in bytes (128 bits)
 SALT_SIZE = 16
 
-# Password hash iterations (separate from key derivation)
-PASSWORD_HASH_ITERATIONS = 100_000
+# Password hash iterations - aligned with PBKDF2_ITERATIONS so the verification
+# hash is no easier to brute-force than the key derivation itself.
+PASSWORD_HASH_ITERATIONS = 480_000
+
+# Legacy value used by vaults initialized before alignment. Kept so old vaults
+# can still unlock; CredentialVault.unlock() transparently re-hashes them
+# with the new iteration count on the first successful unlock.
+LEGACY_PASSWORD_HASH_ITERATIONS = 100_000
 
 
 class EncryptionError(Exception):
@@ -162,7 +168,8 @@ class VaultEncryption:
             self,
             password: str,
             salt: bytes,
-            stored_password_hash: bytes
+            stored_password_hash: bytes,
+            password_hash_iterations: int = PASSWORD_HASH_ITERATIONS,
     ) -> bool:
         """
         Unlock vault with master password.
@@ -171,6 +178,10 @@ class VaultEncryption:
             password: Master password.
             salt: Salt from vault initialization.
             stored_password_hash: Password hash from vault initialization.
+            password_hash_iterations: PBKDF2 iteration count that was used to
+                produce stored_password_hash. Defaults to the current value
+                used for new vaults; callers that load a legacy vault pass
+                LEGACY_PASSWORD_HASH_ITERATIONS so the existing hash matches.
 
         Returns:
             True if password correct and vault unlocked.
@@ -178,12 +189,12 @@ class VaultEncryption:
         Raises:
             InvalidPassword: If password verification fails.
         """
-        # Verify password
+        # Verify password using the iteration count the hash was generated with
         computed_hash = hashlib.pbkdf2_hmac(
             'sha256',
             password.encode('utf-8'),
             salt,
-            PASSWORD_HASH_ITERATIONS
+            password_hash_iterations,
         )
 
         if not secrets.compare_digest(computed_hash, stored_password_hash):
@@ -317,6 +328,25 @@ class VaultEncryption:
         # Initialize with new password
         self.lock()
         return self.initialize(new_password)
+
+
+def compute_password_hash(
+    password: str,
+    salt: bytes,
+    iterations: int = PASSWORD_HASH_ITERATIONS,
+) -> bytes:
+    """Compute the PBKDF2-HMAC-SHA256 verification hash.
+
+    Exposed so vault.py can re-hash a legacy vault's verification value with
+    the current iteration count after a successful unlock, without going
+    through a full reinitialize() / new-salt cycle.
+    """
+    return hashlib.pbkdf2_hmac(
+        'sha256',
+        password.encode('utf-8'),
+        salt,
+        iterations,
+    )
 
 
 def generate_random_password(length: int = 32) -> str:

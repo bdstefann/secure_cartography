@@ -36,7 +36,9 @@ from .models import (
     SNMPv3AuthProtocol, SNMPv3PrivProtocol,
 )
 from .encryption import (
-    VaultEncryption, VaultLocked, InvalidPassword, DecryptionFailed
+    VaultEncryption, VaultLocked, InvalidPassword, DecryptionFailed,
+    PASSWORD_HASH_ITERATIONS, LEGACY_PASSWORD_HASH_ITERATIONS,
+    compute_password_hash,
 )
 from .schema import DatabaseManager
 
@@ -178,6 +180,11 @@ class CredentialVault:
             "password_hash",
             base64.b64encode(password_hash).decode()
         )
+        # Record iteration count so future code can detect legacy vaults that
+        # need transparent re-hashing when PASSWORD_HASH_ITERATIONS is raised.
+        self._db.set_vault_metadata(
+            "password_hash_iterations", str(PASSWORD_HASH_ITERATIONS)
+        )
 
     def unlock(self, password: str) -> bool:
         """
@@ -217,13 +224,29 @@ class CredentialVault:
         salt = base64.b64decode(salt_b64)
         password_hash = base64.b64decode(hash_b64)
 
+        # Iteration count the stored hash was generated with. Missing key =
+        # vault was initialized before iteration alignment, use the legacy 100k.
+        iters_str = self._db.get_vault_metadata("password_hash_iterations")
+        stored_iterations = int(iters_str) if iters_str else LEGACY_PASSWORD_HASH_ITERATIONS
+
         try:
-            self._encryption.unlock(password, salt, password_hash)
+            self._encryption.unlock(password, salt, password_hash, stored_iterations)
         except InvalidPassword:
             self._record_unlock_failure()
             raise
 
         self._reset_unlock_counters()
+
+        # Transparent re-hash if the vault was using the legacy iteration count.
+        if stored_iterations < PASSWORD_HASH_ITERATIONS:
+            new_hash = compute_password_hash(password, salt, PASSWORD_HASH_ITERATIONS)
+            self._db.set_vault_metadata(
+                "password_hash", base64.b64encode(new_hash).decode()
+            )
+            self._db.set_vault_metadata(
+                "password_hash_iterations", str(PASSWORD_HASH_ITERATIONS)
+            )
+
         return True
 
     def _unlock_lockout_remaining_seconds(self) -> int:
@@ -334,6 +357,11 @@ class CredentialVault:
             conn.execute(
                 "INSERT OR REPLACE INTO vault_metadata (key, value) VALUES (?, ?)",
                 ("password_hash", base64.b64encode(new_hash).decode())
+            )
+            # new_hash was produced with the current PASSWORD_HASH_ITERATIONS
+            conn.execute(
+                "INSERT OR REPLACE INTO vault_metadata (key, value) VALUES (?, ?)",
+                ("password_hash_iterations", str(PASSWORD_HASH_ITERATIONS))
             )
 
             conn.commit()

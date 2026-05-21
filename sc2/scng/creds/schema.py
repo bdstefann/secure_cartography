@@ -19,8 +19,13 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-# Schema version for migrations
-SCHEMA_VERSION = 1
+# Schema version for migrations.
+# v1: initial schema.
+# v2: vault_metadata now records `password_hash_iterations` alongside the
+#     verification hash, so legacy 100k vaults can be detected and re-hashed
+#     with the current iteration count on the next successful unlock. The
+#     migration itself is lazy (no DDL): see CredentialVault.unlock().
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 -- Vault metadata (salt, password hash, schema version)
@@ -264,11 +269,19 @@ def get_schema_version(conn: sqlite3.Connection) -> Optional[int]:
 
 
 def migrate_schema(conn: sqlite3.Connection, current_version: int) -> None:
-    """Run schema migrations if needed."""
-    # Future migrations would go here
-    # if current_version < 2:
-    #     _migrate_v1_to_v2(conn)
-    pass
+    """Run schema migrations if needed.
+
+    v1 -> v2: no DDL change. The new convention is that vault_metadata stores
+    `password_hash_iterations`; vaults without that key fall back to the
+    legacy 100k value at unlock time and get re-hashed transparently. All we
+    do here is bump the recorded version so the lazy upgrade path is engaged.
+    """
+    if current_version < 2:
+        conn.execute(
+            "UPDATE vault_metadata SET value = ? WHERE key = 'schema_version'",
+            (str(SCHEMA_VERSION),),
+        )
+        conn.commit()
 
 
 class DatabaseManager:
