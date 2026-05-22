@@ -367,8 +367,11 @@ class TopologyViewer(QWidget):
 
         Args:
             algorithm: Layout algorithm name:
-                - 'dagre': Hierarchical/tiered layout (default, best for networks)
+                - 'dagre': Hierarchical top→bottom (default, best for networks)
+                - 'dagre-lr': Hierarchical left→right
                 - 'cose': Force-directed, organic clustering
+                - 'fcose': Fast compound spring embedder
+                - 'cola': Constraint-based force-directed
                 - 'concentric': Degree-based rings (high-degree nodes in center)
                 - 'grid': Even grid spacing
                 - 'circle': Ring around perimeter
@@ -656,7 +659,7 @@ if __name__ == '__main__':
             toolbar.addSeparator()
 
             # Layout actions
-            for layout in ['dagre', 'cose', 'concentric', 'grid', 'circle', 'breadthfirst']:
+            for layout in ['dagre', 'dagre-lr', 'breadthfirst', 'fcose', 'cose', 'cola', 'concentric', 'circle', 'grid']:
                 action = QAction(f"Layout: {layout}", self)
                 action.triggered.connect(
                     lambda checked, l=layout: self.viewer.apply_layout(l)

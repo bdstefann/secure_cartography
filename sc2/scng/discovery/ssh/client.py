@@ -9,21 +9,251 @@ Adapted from VCollector's ssh_client.py with:
 - ANSI sequence filtering
 - Sophisticated prompt detection
 - Pagination disabling
+- NetEmulate support (emulation mode for mock device testing)
 
 Invoke-shell only - no exec mode. This is required for most network devices.
 """
 
 import os
 import re
+import json
 import time
 import logging
 from io import StringIO
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Dict
+from pathlib import Path
 
 import paramiko
 
 logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# NetEmulate - Emulation Mode
+# ═══════════════════════════════════════════════════════════════════════
+# Set EMULATION_ENABLED = True and provide ip_lookup.json path to
+# transparently redirect all SSH connections to mock devices.
+#
+# Usage:
+#   from ssh_client import enable_emulation, disable_emulation
+#   enable_emulation("/path/to/ip_lookup.json")
+#   # ... all SSH connections now route to mock devices ...
+#   disable_emulation()
+# ═══════════════════════════════════════════════════════════════════════
+
+EMULATION_ENABLED: bool = False
+EMULATION_LOOKUP: Dict[str, dict] = {}
+EMULATION_HOST: str = "127.0.0.1"
+EMULATION_CREDS: tuple = ("admin", "admin")  # mock devices accept anything
+EMULATION_DEFAULT_LOOKUP: str = "ip_lookup.json"  # auto-load path
+
+
+def enable_emulation(
+    lookup_path: str = None,
+    bind_host: str = "127.0.0.1",
+    creds: tuple = ("admin", "admin"),
+) -> int:
+    """
+    Enable emulation mode - redirect SSH connections to mock devices.
+
+    Args:
+        lookup_path: Path to ip_lookup.json (default: searches common locations)
+        bind_host: Address mock servers are bound to (default: 127.0.0.1)
+        creds: Username/password for mock devices (default: admin/admin)
+
+    Returns:
+        Number of IPs loaded into lookup table.
+    """
+    global EMULATION_ENABLED, EMULATION_LOOKUP, EMULATION_HOST, EMULATION_CREDS
+
+    # Search for lookup file if not specified
+    if lookup_path is None:
+        search_paths = [
+            Path("ip_lookup.json"),
+            Path(__file__).parent / "ip_lookup.json",
+            Path.home() / "PycharmProjects" / "netemulate" / "ip_lookup.json",
+        ]
+        for p in search_paths:
+            if p.exists():
+                lookup_path = str(p)
+                break
+        else:
+            raise FileNotFoundError(
+                f"Emulation lookup not found. Searched:\n"
+                + "\n".join(f"  - {p}" for p in search_paths)
+            )
+
+    path = Path(lookup_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Emulation lookup not found: {lookup_path}")
+
+    EMULATION_LOOKUP = json.loads(path.read_text())
+    EMULATION_HOST = bind_host
+    EMULATION_CREDS = creds
+    EMULATION_ENABLED = True
+    _install_dns_intercept()
+
+    logger.info(f"[EMULATION] Enabled - {len(EMULATION_LOOKUP)} IPs loaded from {lookup_path}")
+    return len(EMULATION_LOOKUP)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# DNS Intercept — patches socket.getaddrinfo so SC's hostname resolution
+# returns 127.0.0.1 for mock devices instead of failing with NXDOMAIN.
+# ═══════════════════════════════════════════════════════════════════════
+
+DNS_INTERCEPT_INSTALLED: bool = False
+_original_getaddrinfo = None
+
+
+def _install_dns_intercept():
+    """
+    Monkey-patch socket.getaddrinfo to intercept hostname resolution for
+    mock devices. When SC tries to resolve 'tor101.iad1' or
+    'edge1-01.iad1.kentik.com', we return 127.0.0.1 so SC proceeds to
+    connect() where the port redirect happens normally.
+
+    Only intercepts hostnames that resolve via lookup_emulation() —
+    all other DNS queries pass through to the real resolver unchanged.
+    """
+    import socket as _socket
+    global DNS_INTERCEPT_INSTALLED, _original_getaddrinfo
+
+    if DNS_INTERCEPT_INSTALLED:
+        return
+
+    _original_getaddrinfo = _socket.getaddrinfo
+
+    def _patched_getaddrinfo(host, port, *args, **kwargs):
+        if EMULATION_ENABLED and isinstance(host, str):
+            emu = lookup_emulation(host)
+            if emu:
+                # Return the real IP key from ip_lookup.json so SC builds
+                # SSHClientConfig(host=real_ip). connect() then gets an
+                # exact-match HIT and redirects to 127.0.0.1:mock_port.
+                # We cannot return mock_port here because SC ignores the
+                # port from getaddrinfo and always uses its own port 22.
+                real_ip = next(
+                    (ip for ip, entry in EMULATION_LOOKUP.items()
+                     if entry.get('hostname') == emu['hostname']),
+                    None
+                )
+                if real_ip:
+                    logger.info(
+                        f"[EMULATION] DNS intercept: {host!r} -> {real_ip}  "
+                        f"(mock: {emu['hostname']}:{emu['port']})"
+                    )
+                    return [(_socket.AF_INET, _socket.SOCK_STREAM, 6, '',
+                             (real_ip, port or 22))]
+        return _original_getaddrinfo(host, port, *args, **kwargs)
+
+    _socket.getaddrinfo = _patched_getaddrinfo
+    DNS_INTERCEPT_INSTALLED = True
+    logger.info("[EMULATION] DNS intercept installed — hostname resolution patched")
+
+
+def _uninstall_dns_intercept():
+    """Restore original socket.getaddrinfo."""
+    import socket as _socket
+    global DNS_INTERCEPT_INSTALLED, _original_getaddrinfo
+    if _original_getaddrinfo:
+        _socket.getaddrinfo = _original_getaddrinfo
+        _original_getaddrinfo = None
+    DNS_INTERCEPT_INSTALLED = False
+    logger.info("[EMULATION] DNS intercept removed")
+
+
+def disable_emulation():
+    """Disable emulation mode - restore normal SSH connections."""
+    global EMULATION_ENABLED, EMULATION_LOOKUP
+    EMULATION_ENABLED = False
+    EMULATION_LOOKUP = {}
+    _uninstall_dns_intercept()
+    logger.info("[EMULATION] Disabled - connections restored to normal")
+
+
+def _auto_load_emulation():
+    """Auto-load emulation lookup if EMULATION_ENABLED is True but lookup is empty."""
+    global EMULATION_LOOKUP
+    if EMULATION_ENABLED and not EMULATION_LOOKUP:
+        path = Path(EMULATION_DEFAULT_LOOKUP)
+        if not path.exists():
+            path = Path(__file__).parent / EMULATION_DEFAULT_LOOKUP
+        if path.exists():
+            EMULATION_LOOKUP = json.loads(path.read_text())
+            logger.info(f"[EMULATION] Auto-loaded {len(EMULATION_LOOKUP)} IPs from {path}")
+        else:
+            logger.warning(f"[EMULATION] ENABLED but no lookup file found at {EMULATION_DEFAULT_LOOKUP}")
+
+
+def lookup_emulation(host: str) -> Optional[dict]:
+    """
+    Look up a host/IP in the emulation table.
+
+    Tries multiple resolution strategies before giving up:
+      1. Exact match on host as-is (covers plain IPs)
+      2. DNS resolution -> IP lookup (covers hostnames SC passes directly)
+      3. FQDN strip -> hostname lookup (covers tor101.iad1.kentik.com -> tor101.iad1)
+      4. Reverse scan: find any entry whose 'hostname' field matches the host
+
+    Returns:
+        {"hostname": "...", "port": N, "source": "..."} or None
+    """
+    if not EMULATION_ENABLED:
+        return None
+
+    # Never try to resolve localhost — it's already where mock devices live
+    if host == '127.0.0.1' or host.startswith('127.'):
+        return None
+
+    if not EMULATION_LOOKUP:
+        _auto_load_emulation()
+
+    if not EMULATION_LOOKUP:
+        return None
+
+    # ── Strategy 1: exact match (plain IP, most common) ───────────────
+    result = EMULATION_LOOKUP.get(host)
+    if result:
+        logger.info(f"[EMULATION] HIT  {host!r} -> {result['hostname']}:{result['port']}  (exact)")
+        return result
+
+    # ── Strategy 2: DNS resolve -> IP lookup ──────────────────────────
+    # SC may pass a hostname string instead of an IP
+    import socket
+    try:
+        resolved_ip = socket.gethostbyname(host)
+        if resolved_ip != host:
+            logger.debug(f"[EMULATION] DNS  {host!r} -> {resolved_ip}")
+            result = EMULATION_LOOKUP.get(resolved_ip)
+            if result:
+                logger.info(f"[EMULATION] HIT  {host!r} -> {result['hostname']}:{result['port']}  (dns->{resolved_ip})")
+                return result
+    except Exception:
+        pass
+
+    # ── Strategy 3: strip FQDN suffixes -> look for short hostname ────
+    # Build a reverse map of hostname -> entry on first use
+    # e.g. "tor101.iad1.kentik.com" -> try "tor101.iad1.kentik", "tor101.iad1", "tor101"
+    host_lower = host.lower()
+    parts = host_lower.split('.')
+    for i in range(1, len(parts)):
+        candidate = '.'.join(parts[:i + 1])        # tor101.iad1, then tor101.iad1.kentik ...
+        for ip, entry in EMULATION_LOOKUP.items():
+            if entry.get('hostname', '').lower() == candidate:
+                logger.info(f"[EMULATION] HIT  {host!r} -> {entry['hostname']}:{entry['port']}  (fqdn-strip->{candidate})")
+                return entry
+
+    # ── Strategy 4: reverse scan on hostname field ────────────────────
+    # Last resort — O(n) scan, but lookup table is small (~200 entries)
+    for ip, entry in EMULATION_LOOKUP.items():
+        if entry.get('hostname', '').lower() == host_lower:
+            logger.info(f"[EMULATION] HIT  {host!r} -> {entry['hostname']}:{entry['port']}  (hostname-match on {ip})")
+            return entry
+
+    logger.info(f"[EMULATION] MISS {host!r}  (tried exact, dns, fqdn-strip, reverse-scan)")
+    return result
 
 
 def filter_ansi_sequences(text: str) -> str:
@@ -133,6 +363,10 @@ class SSHClient:
     Uses invoke_shell for interactive session - required for most
     network devices that don't support direct exec.
 
+    Supports emulation mode for testing against NetEmulate mock devices.
+    When emulation is enabled, connections are transparently redirected
+    to localhost:<port> based on ip_lookup.json.
+
     Example:
         config = SSHClientConfig(
             host="192.168.1.1",
@@ -146,6 +380,11 @@ class SSHClient:
         client.set_expect_prompt(prompt)
         output = client.execute_command("show version")
         client.disconnect()
+
+    Emulation Example:
+        enable_emulation("ip_lookup.json")
+        # Now the same code above connects to mock devices instead
+        # 192.168.1.1 -> 127.0.0.1:10248 (transparently)
     """
 
     def __init__(self, config: SSHClientConfig):
@@ -155,9 +394,55 @@ class SSHClient:
         self._output_buffer = StringIO()
         self._detected_prompt: Optional[str] = None
         self._expect_prompt: Optional[str] = None
+        self._emulated: bool = False          # True if this connection was redirected
+        self._emulated_device: Optional[str] = None  # Mock device hostname
 
     def connect(self) -> None:
-        """Establish SSH connection and open shell."""
+        """
+        Establish SSH connection and open shell.
+
+        In emulation mode, the target host/port are transparently
+        redirected to the mock device server based on ip_lookup.json.
+        Credentials are overridden to match the mock server.
+
+        The shim accepts both IP addresses and hostnames — if the crawler
+        queues a neighbor by system name rather than IP (e.g. when the LLDP
+        management address is a MAC or missing entirely), lookup_emulation()
+        resolves it via FQDN-strip and reverse-hostname-scan strategies.
+        """
+        # ── Emulation redirect ──────────────────────────────────
+        if EMULATION_ENABLED:
+            host = self.config.host
+            is_ip = bool(re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host))
+            logger.info(
+                f"[EMULATION] Resolving {host!r}  "
+                f"({'IP' if is_ip else 'hostname — will try FQDN-strip + reverse-scan'})"
+            )
+
+        emu = lookup_emulation(self.config.host)
+        if emu:
+            original_host = self.config.host
+            original_port = self.config.port
+            self.config.host = EMULATION_HOST
+            self.config.port = emu["port"]
+            self.config.username = EMULATION_CREDS[0]
+            self.config.password = EMULATION_CREDS[1]
+            self.config.legacy_mode = False  # Mock server doesn't need legacy
+            self._emulated = True
+            self._emulated_device = emu["hostname"]
+            logger.info(
+                f"[EMULATION] {original_host}:{original_port} -> "
+                f"{EMULATION_HOST}:{emu['port']} ({emu['hostname']})"
+            )
+        elif EMULATION_ENABLED:
+            logger.warning(
+                f"[EMULATION] UNRESOLVED {self.config.host!r} — "
+                f"no IP, DNS, FQDN-strip, or hostname match found. "
+                f"This neighbor will fail to connect. "
+                f"Check ip_lookup.json contains an entry for this device."
+            )
+        # ────────────────────────────────────────────────────────
+
         logger.debug(f"Connecting to {self.config.host}:{self.config.port}")
 
         self._client = paramiko.SSHClient()
@@ -204,6 +489,9 @@ class SSHClient:
         """Create interactive shell stream."""
         logger.debug("Creating shell stream")
 
+        # Note: height=24 is required — some older IOS SSH implementations
+        # (e.g., Cisco-1.25) reject or silently fail on height=0 PTY requests.
+        # Pagination is handled by 'terminal length 0', not the PTY size.
         self._shell = self._client.invoke_shell(
             term='xterm',
             width=200,
@@ -212,7 +500,10 @@ class SSHClient:
         self._shell.settimeout(self.config.timeout)
 
         # Wait for shell initialization
-        time.sleep(2)
+        if self._emulated:
+            time.sleep(0.3)  # Mock devices are instant
+        else:
+            time.sleep(2)
 
         # Read initial output
         self._drain_output()
@@ -234,119 +525,86 @@ class SSHClient:
             load_method = 'from_private_key_file'
             logger.debug(f"Loading key from file: {key_file}")
         else:
-            raise ValueError("No key source provided")
+            raise ValueError("No key source specified")
 
         # Try each key type
-        key_classes = [
-            ('Ed25519', paramiko.Ed25519Key),
-            ('RSA', paramiko.RSAKey),
-            ('ECDSA', paramiko.ECDSAKey),
+        key_types = [
+            paramiko.RSAKey,
+            paramiko.Ed25519Key,
+            paramiko.ECDSAKey,
         ]
 
-        for key_name, key_class in key_classes:
+        last_error = None
+        for key_class in key_types:
             try:
                 loader = getattr(key_class, load_method)
-                if load_method == 'from_private_key':
-                    # Reset StringIO position for each attempt
-                    if hasattr(key_source, 'seek'):
-                        key_source.seek(0)
+                if passphrase:
                     return loader(key_source, password=passphrase)
-                else:
-                    return loader(key_source, password=passphrase)
+                return loader(key_source)
             except Exception as e:
-                logger.debug(f"{key_name} key load failed: {e}")
-                continue
+                last_error = e
+                # Reset StringIO position for next attempt
+                if isinstance(key_source, StringIO):
+                    key_source.seek(0)
 
-        raise ValueError("Unable to load private key - unsupported format")
-
-    def _recv_filtered(self, size: int = 4096) -> str:
-        """Read from shell with ANSI filtering."""
-        try:
-            raw_data = self._shell.recv(size).decode('utf-8', errors='replace')
-            return filter_ansi_sequences(raw_data)
-        except Exception as e:
-            logger.debug(f"Error reading from shell: {e}")
-            return ""
+        raise ValueError(f"Unable to load key: {last_error}")
 
     def _drain_output(self) -> str:
-        """Read all available output from shell."""
+        """Read all pending output from the shell."""
         output = ""
         while self._shell.recv_ready():
-            chunk = self._recv_filtered()
-            output += chunk
+            chunk = self._shell.recv(65535).decode('utf-8', errors='replace')
+            output += filter_ansi_sequences(chunk)
             time.sleep(0.05)
         return output
 
-    def find_prompt(self, attempt_count: int = 5, timeout: float = 5.0) -> str:
+    def _recv_filtered(self) -> str:
+        """Receive and filter data from shell."""
+        data = self._shell.recv(65535).decode('utf-8', errors='replace')
+        return filter_ansi_sequences(data)
+
+    def find_prompt(self, attempt_count: int = None, timeout: float = None) -> str:
         """
-        Auto-detect command prompt.
+        Detect the device prompt.
 
-        Sends newlines and analyzes output to find prompt pattern.
-
-        Args:
-            attempt_count: Number of detection attempts.
-            timeout: Timeout per attempt in seconds.
-
-        Returns:
-            Detected prompt string.
+        Sends newlines and observes what comes back.
+        Faster timeouts in emulation mode since mock devices respond instantly.
         """
-        if not self._shell:
-            raise RuntimeError("Shell not initialized")
+        attempt_count = attempt_count or self.config.prompt_count
+        timeout = timeout or self.config.shell_timeout
 
-        logger.debug("Attempting to auto-detect command prompt")
+        # Mock devices respond instantly — no need to wait
+        if self._emulated:
+            attempt_count = min(attempt_count, 2)
+            timeout = min(timeout, 1.0)
 
-        # Clear any pending data
-        self._drain_output()
+        prompts_seen = []
 
-        # Send newline to trigger prompt
-        self._shell.send("\n")
-        time.sleep(3)
-
-        # Collect output
-        buffer = ""
-        start_time = time.time()
-        while time.time() - start_time < 3:
-            if self._shell.recv_ready():
-                buffer += self._recv_filtered()
-            else:
-                time.sleep(0.1)
-
-        # Try to extract prompt
-        prompt = self._extract_prompt(buffer)
-        if prompt:
-            self._detected_prompt = prompt
-            logger.debug(f"Detected prompt: {prompt!r}")
-            return prompt
-
-        # Additional attempts
         for i in range(attempt_count):
-            logger.debug(f"Prompt detection attempt {i + 1}/{attempt_count}")
+            # Drain stale
+            self._drain_output()
 
-            self._shell.send("\n")
-            buffer = ""
+            # Send newline
+            self._shell.send('\n')
 
-            start_time = time.time()
-            while time.time() - start_time < timeout:
-                if self._shell.recv_ready():
-                    buffer += self._recv_filtered()
-                else:
-                    if buffer:
-                        prompt = self._extract_prompt(buffer)
-                        if prompt:
-                            self._detected_prompt = prompt
-                            logger.debug(f"Detected prompt: {prompt!r}")
-                            return prompt
-                    time.sleep(0.1)
+            # Wait and collect
+            time.sleep(timeout)
+            buffer = self._drain_output()
 
             if buffer:
                 prompt = self._extract_prompt(buffer)
                 if prompt:
-                    self._detected_prompt = prompt
-                    logger.debug(f"Detected prompt: {prompt!r}")
-                    return prompt
+                    prompts_seen.append(prompt)
+
+        if prompts_seen:
+            # Use most common prompt
+            prompt = max(set(prompts_seen), key=prompts_seen.count)
+            self._detected_prompt = prompt
+            logger.debug(f"Detected prompt: {prompt!r}")
+            return prompt
 
         # Fallback
-        logger.warning("Could not detect prompt, using default '#'")
+        logger.warning("Could not detect prompt, using '#' fallback")
         self._detected_prompt = "#"
         return "#"
 
@@ -441,6 +699,16 @@ class SSHClient:
         """Get hostname extracted from prompt."""
         return self.extract_hostname_from_prompt()
 
+    @property
+    def is_emulated(self) -> bool:
+        """True if this connection is using emulation mode."""
+        return self._emulated
+
+    @property
+    def emulated_device(self) -> Optional[str]:
+        """Hostname of the mock device (if emulated)."""
+        return self._emulated_device
+
     def set_expect_prompt(self, prompt: str) -> None:
         """Set the prompt string to expect after commands."""
         self._expect_prompt = prompt
@@ -450,21 +718,31 @@ class SSHClient:
         """
         Disable pagination by trying common commands.
 
-        Fires multiple vendor commands - wrong ones just error harmlessly.
+        Fires multiple vendor commands — wrong ones just produce errors
+        that are drained and discarded. Each command is followed by a
+        find_prompt() to confirm the shell returned to a clean state
+        before sending the next.
+
+        Skipped entirely in emulation mode — mock devices don't paginate.
         """
+        if self._emulated:
+            logger.debug("[EMULATION] Skipping pagination disable (mock device)")
+            return
+
         logger.debug("Disabling pagination (shotgun approach)")
 
         for cmd in PAGINATION_DISABLE_SHOTGUN:
             try:
                 self._shell.send(cmd + '\n')
-                time.sleep(0.3)
-                self._drain_output()  # Discard response/errors
+                # Confirm prompt returns — consumes any error output
+                # and validates the shell is ready for the next command
+                self.find_prompt(attempt_count=1, timeout=3.0)
             except Exception as e:
                 logger.debug(f"Pagination cmd failed (expected): {cmd} - {e}")
 
-        # Small settle time
-        time.sleep(0.5)
-        self._drain_output()
+        # Final prompt check — confirm clean shell state
+        prompt = self.find_prompt(attempt_count=2, timeout=3.0)
+        logger.debug(f"Pagination disable complete, prompt={prompt!r}")
 
     def execute_command(
         self,
@@ -497,6 +775,20 @@ class SSHClient:
                 time.sleep(0.1)
                 continue
 
+            # ── Drain stale data before sending ──────────────────
+            # Between poll cycles, the channel may accumulate trailing
+            # bytes from the previous command (post-prompt newlines,
+            # late-arriving output fragments). Without draining, the
+            # next _wait_for_prompt() reads stale data first, finds
+            # the *previous* command's prompt, and returns immediately
+            # with garbage — causing a one-command offset desync where
+            # every collection parses the previous collection's output.
+            stale = self._drain_output()
+            if stale:
+                logger.debug(
+                    f"Drained {len(stale)} bytes of stale data before '{cmd}'"
+                )
+
             logger.debug(f"Sending: {cmd}")
             self._shell.send(cmd + '\n')
 
@@ -504,7 +796,7 @@ class SSHClient:
             cmd_output = self._wait_for_prompt(timeout)
             output_buffer.write(cmd_output)
 
-            time.sleep(self.config.inter_command_time)
+            time.sleep(self.config.inter_command_time if not self._emulated else 0.05)
 
         return output_buffer.getvalue()
 
@@ -527,6 +819,13 @@ class SSHClient:
 
                 if prompt in output:
                     logger.debug("Prompt detected in output")
+                    # Brief settle: some devices send trailing bytes
+                    # (newlines, control chars) after the prompt.
+                    # Capture them now instead of leaving them to
+                    # poison the next command's buffer.
+                    time.sleep(0.05)
+                    if self._shell.recv_ready():
+                        output += self._recv_filtered()
                     return output
 
             time.sleep(0.01)
@@ -536,6 +835,9 @@ class SSHClient:
 
     def disconnect(self) -> None:
         """Close SSH connection."""
+        if self._emulated:
+            logger.debug(f"[EMULATION] Disconnecting from mock device {self._emulated_device}")
+
         if self._shell:
             try:
                 self._shell.close()

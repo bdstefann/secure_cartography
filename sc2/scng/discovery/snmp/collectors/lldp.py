@@ -33,6 +33,132 @@ LLDP_LOC_PORT_ID = "1.0.8802.1.1.2.1.3.7.1.3"          # Column 3 - The interfac
 LLDP_LOC_PORT_DESC = "1.0.8802.1.1.2.1.3.7.1.4"        # Column 4 - Port description
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Remote Port ID Resolution
+#
+# LLDP port_id frequently does NOT contain a usable interface name.
+# Observed failure modes from production:
+#
+#   subtype 7 (local)       → numeric value "689" (Juniper EX)
+#   subtype 3 (macAddress)  → MAC "00:25:90:e2:11:38" (Linux NICs)
+#   subtype 5 (ifName)      → "Management1" (Arista EOS ≤4.23)
+#
+# In many of these cases, lldpRemPortDesc carries the real interface
+# name ("ge-1/0/30", "eth1") as a fallback.
+# ═══════════════════════════════════════════════════════════════════
+
+def _is_unusable_port_id(port_id: str, subtype: int) -> bool:
+    """
+    Check whether a decoded port_id is NOT usable as a topology interface name.
+
+    Returns True for:
+      - Empty / whitespace
+      - Pure numeric strings (Juniper locally-assigned "689")
+      - MAC addresses (subtype 3, or colon-hex format)
+      - Management interfaces (real interface, but not the connected port)
+    """
+    if not port_id:
+        return True
+
+    s = port_id.strip()
+    if not s:
+        return True
+
+    # Pure numeric — Juniper subtype 7 local port number
+    if s.isdigit():
+        return True
+
+    # MAC address — subtype 3 is always MAC; also catch format heuristically
+    if subtype == 3:
+        return True
+    if ':' in s or '-' in s:
+        clean = s.replace(':', '').replace('-', '').replace('.', '').lower()
+        if len(clean) == 12 and all(c in '0123456789abcdef' for c in clean):
+            return True
+
+    # Management interface — real but never the connected uplink/downlink
+    lower = s.lower()
+    if lower.startswith(('management', 'mgmt')):
+        return True
+
+    return False
+
+
+def _looks_like_interface(name: str) -> bool:
+    """
+    Heuristic: does this string plausibly represent an interface name?
+
+    Accepts standard vendor prefixes (Ethernet1, ge-0/0/30, Te1/49)
+    and Linux custom names (eth1, tor0, bond0).
+
+    Rejects MACs, pure numbers, structured descriptions, management ports.
+    """
+    if not name:
+        return False
+    s = name.strip()
+    if not s or len(s) > 64:
+        return False
+
+    # Structured descriptions contain :: or spaces — not a raw interface
+    if '::' in s or ' ' in s:
+        return False
+
+    # Pure numeric
+    if s.isdigit():
+        return False
+
+    # MAC address format
+    if ':' in s or '-' in s:
+        clean = s.replace(':', '').replace('-', '').replace('.', '').lower()
+        if len(clean) == 12 and all(c in '0123456789abcdef' for c in clean):
+            return False
+
+    # Must contain at least one letter
+    if not any(c.isalpha() for c in s):
+        return False
+
+    # Management — topology-irrelevant
+    lower = s.lower()
+    if lower.startswith(('management', 'mgmt')):
+        return False
+
+    return True
+
+
+def _resolve_remote_port(
+    port_id: str,
+    port_id_subtype: int,
+    port_description: str,
+    _vprint=None,
+) -> str:
+    """
+    Resolve the best available remote interface name for topology mapping.
+
+    Priority:
+      1. port_id — if it's a usable interface name, use it directly
+      2. port_description — if port_id is unusable and port_description
+         looks like a raw interface name (not structured), use it
+      3. port_id as-is — last resort, even if it's a MAC or number
+    """
+    _log = _vprint or (lambda msg: None)
+
+    # If port_id is usable, done
+    if not _is_unusable_port_id(port_id, port_id_subtype):
+        return port_id
+
+    # Try port_description as fallback
+    desc = (port_description or '').strip()
+    if desc and _looks_like_interface(desc):
+        _log(f"port_id '{port_id}' (subtype={port_id_subtype}) unusable "
+             f"→ using port_description '{desc}'")
+        return desc
+
+    # No viable fallback — return original port_id
+    _log(f"port_id '{port_id}' (subtype={port_id_subtype}) unusable, "
+         f"no fallback from port_description '{port_description}'")
+    return port_id or ''
+
+
 async def get_lldp_local_port_map(
     target: str,
     auth: AuthData,
@@ -272,10 +398,19 @@ async def get_lldp_neighbors(
         if not local_interface:
             local_interface = f"ifIndex_{local_port_num}"
 
+        # Resolve remote port name — prefer port_id, fall back to
+        # port_description when port_id is a MAC, number, or Management*
+        remote_port = _resolve_remote_port(
+            port_id=data.get('port_id', ''),
+            port_id_subtype=data.get('port_id_subtype', LLDP.PORT_SUBTYPE_IF_NAME),
+            port_description=data.get('port_description', ''),
+            _vprint=_vprint,
+        )
+
         neighbor = Neighbor.from_lldp(
             local_interface=local_interface,
             system_name=system_name,
-            port_id=data.get('port_id'),
+            port_id=remote_port,
             management_address=mgmt_addr,
             chassis_id=chassis_id,
             port_description=data.get('port_description'),

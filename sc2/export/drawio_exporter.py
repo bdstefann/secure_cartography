@@ -407,6 +407,76 @@ class DrawioExporter:
 
         self.mac_pattern = re.compile(r'^([0-9a-f]{4}\.){2}[0-9a-f]{4}$', re.IGNORECASE)
 
+    # -----------------------------------------------------------------
+    # Viewer position → DrawIO coordinate conversion
+    #
+    # Cytoscape positions are node-center in an arbitrary coordinate
+    # system with potentially negative values.  DrawIO positions are
+    # top-left with positive coordinates.  This mirrors the approach
+    # from netaudit's drawio-export.js._buildPositions().
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _positions_from_viewer(
+        data: Dict,
+        viewer_pos: Dict[str, Dict[str, float]],
+        node_w: int = 60,
+        node_h: int = 60,
+        scale: float = 1.8,
+        margin: int = 80,
+    ) -> Dict[str, Tuple[int, int]]:
+        """
+        Convert Cytoscape center-based positions to DrawIO top-left positions.
+
+        Args:
+            data: Preprocessed topology (determines which nodes need positions)
+            viewer_pos: {node_id: {"x": float, "y": float}} from Cytoscape
+            node_w: DrawIO node width
+            node_h: DrawIO node height
+            scale: Scale factor (Cytoscape spacing is tighter than DrawIO)
+            margin: Pixel margin around the diagram
+        """
+        positions = {}
+        node_ids = list(data.keys())
+        half_w = node_w / 2
+        half_h = node_h / 2
+
+        # Find bounding box of viewer positions
+        min_x = float('inf')
+        min_y = float('inf')
+        matched = 0
+        for nid in node_ids:
+            pos = viewer_pos.get(nid)
+            if pos:
+                min_x = min(min_x, pos['x'])
+                min_y = min(min_y, pos['y'])
+                matched += 1
+
+        if matched > 0:
+            for nid in node_ids:
+                pos = viewer_pos.get(nid)
+                if pos:
+                    # Center → top-left, normalize to positive, scale up
+                    positions[nid] = (
+                        int((pos['x'] - min_x) * scale + margin - half_w),
+                        int((pos['y'] - min_y) * scale + margin - half_h),
+                    )
+                else:
+                    # Node exists in topology but wasn't visible in viewer
+                    positions[nid] = (margin, margin)
+        else:
+            # No positions matched — fall back to simple grid
+            cols = max(1, int(len(node_ids) ** 0.5))
+            for idx, nid in enumerate(sorted(node_ids)):
+                col = idx % cols
+                row = idx // cols
+                positions[nid] = (
+                    margin + col * 160,
+                    margin + row * 140,
+                )
+
+        return positions
+
     def _reset_state(self) -> None:
         """Reset internal state between exports."""
         self.node_id_map.clear()
@@ -577,9 +647,18 @@ class DrawioExporter:
         target_id: str,
         connection: Connection
     ) -> None:
-        """Add an edge element to the diagram."""
+        """Add an edge element to the diagram, or append to existing edge label."""
         edge_key = tuple(sorted([source_id, target_id]))
+        conn_label = f"{connection.local_port} → {connection.remote_port}"
+
         if edge_key in self.edge_id_map:
+            # Edge already exists — append this connection to its label
+            cell_id = self.edge_id_map[edge_key]
+            for cell in root.iter("mxCell"):
+                if cell.get("id") == cell_id:
+                    existing = cell.get("value", "")
+                    cell.set("value", f"{existing}&#xa;{conn_label}")
+                    break
             return
 
         cell_id = self._get_next_id()
@@ -593,20 +672,27 @@ class DrawioExporter:
         cell.set("style", self.layout_manager.get_edge_style())
         cell.set("edge", "1")
 
-        label = f"{connection.local_port} → {connection.remote_port}"
-        cell.set("value", label)
+        cell.set("value", conn_label)
 
         geometry = ET.SubElement(cell, "mxGeometry")
         geometry.set("relative", "1")
         geometry.set("as", "geometry")
 
-    def export(self, topology: Dict, output_path: Path) -> None:
+    def export(
+        self,
+        topology: Dict,
+        output_path: Path,
+        viewer_positions: Optional[Dict[str, Dict[str, float]]] = None,
+    ) -> None:
         """
         Export topology to Draw.io file.
 
         Args:
             topology: SC2 map format topology dict
             output_path: Output file path
+            viewer_positions: Optional Cytoscape node positions {id: {x, y}}.
+                              When provided, the DrawIO layout mirrors the
+                              interactive viewer instead of computing its own.
         """
         self._reset_state()
 
@@ -622,7 +708,12 @@ class DrawioExporter:
                         edges.append((source_id, target_id))
 
         # Calculate positions
-        positions = self.layout_manager.get_node_positions(data, edges)
+        if viewer_positions:
+            positions = self._positions_from_viewer(
+                data, viewer_positions, node_w=60, node_h=60
+            )
+        else:
+            positions = self.layout_manager.get_node_positions(data, edges)
 
         # Create XML structure
         mxfile_root, cell_root = self._create_mxfile()

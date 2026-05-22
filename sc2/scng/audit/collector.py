@@ -21,7 +21,8 @@ from datetime import datetime
 
 from ..discovery.ssh.client import SSHClient, SSHClientConfig
 from ..discovery.models import DeviceVendor
-
+from ..discovery.ssh.client import enable_emulation
+enable_emulation("ip_lookup.json")
 # Import vault - try multiple paths for different package structures
 HAS_VAULT = False
 try:

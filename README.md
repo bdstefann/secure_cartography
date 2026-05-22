@@ -1,38 +1,49 @@
-# Secure Cartography v2
+# Secure Cartography
 
-**SSH & SNMP-Based Network Discovery and Topology Mapping**
+**Network Discovery, Topology Mapping, and Vulnerability Assessment**
 
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![PyQt6](https://img.shields.io/badge/GUI-PyQt6-green.svg)](https://www.riverbankcomputing.com/software/pyqt/)
+[![PyPI](https://img.shields.io/pypi/v/secure-cartography)](https://pypi.org/project/secure-cartography/)
 
-Secure Cartography is a network discovery tool that crawls your infrastructure via SNMP and SSH, collecting CDP/LLDP neighbor information to automatically generate topology maps. Built by a network engineer, for network engineers. 
-
-If you are interested in a non-python native application for network maps see [Secure Cartography  JS](https://github.com/scottpeterman/secure_cartography_js)
+Secure Cartography crawls your network via SNMP and SSH, maps the topology from CDP/LLDP neighbors, and scans discovered platforms against the NIST vulnerability database — all from a single desktop application with zero server infrastructure. Built by a network engineer, for network engineers.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/scottpeterman/secure_cartography/refs/heads/main/screenshots/slides2.gif" alt="Secure Cartography - Cyber Theme" width="800">
+  <img src="https://raw.githubusercontent.com/scottpeterman/secure_cartography/refs/heads/main/screenshots/slides2.gif" alt="Secure Cartography" width="800">
 </p>
 
 ---
 
-## What's New in v2
+## What It Does
 
-Version 2 is a complete rewrite with a modernized architecture:
+**Discover** → **Visualize** → **Arrange** → **Export** → **Scan**
 
-| Feature | v1                           | v2                                                                     |
-|---------|------------------------------|------------------------------------------------------------------------|
-| Discovery Engine | Synchronous, single-threaded | **Async with configurable concurrency**                                |
-| Discovery Protocol | SSH only                     | **SNMP-first with SSH fallback**                                       |
-| Credential Storage | No credential persistance    | **SQLite vault with AES-256 encryption**                               |
-| CLI | Basic                        | **Full-featured with test/discover/crawl commands**                    |
-| Progress Reporting | Callbacks                    | **Structured events for GUI integration**                              |
-| SNMP Support | None                         | **v2c and v3 (authPriv)**                                              |
-| Vendor Support | Cisco, Arista                | **+ Cisco, Arista and Juniper, Others fingerprinted based on sysdesc** |
-| GUI | PyQt6                        | **PyQt6 with theme support (Cyber/Dark/Light)**                        |
-| Topology Viewer | External (yEd/Draw.io)       | **Embedded Cytoscape.js with vendor coloring, yEd & Draw.io export**   |
-| Security Analysis | None                         | **CVE vulnerability scanning via NIST NVD**                            |
-| Device Polling | None                         | **Interactive SNMP fingerprinting from map**                           |
+1. **Discover** your network from a seed IP using SNMP (v2c/v3) with SSH fallback — CDP and LLDP neighbor crawling across Cisco, Arista, Juniper, and more
+2. **Visualize** the topology in an interactive Cytoscape.js viewer with vendor coloring and platform icons
+3. **Arrange** nodes interactively and save your layout — positions persist across sessions
+4. **Export** to Draw.io (position-matched to your viewer layout), yEd GraphML, PNG, CSV, or JSON
+5. **Scan** discovered platforms against the NIST NVD for known CVEs with severity ratings
+
+No database. No web server. No Docker. Just `pip install secure-cartography` and go.
+
+---
+
+## What's New in v2.5
+
+| Feature | Description |
+|---------|-------------|
+| **Layout persistence** | Save/restore node positions in `.layout.json` sidecar files — arrangements survive across sessions |
+| **Position-matched Draw.io export** | Draw.io output mirrors your interactive viewer layout instead of computing its own |
+| **Focus maps** | Select a node, open a 1-hop neighborhood view for troubleshooting adjacencies |
+| **NX-OS platform detection** | tfsm_fire parses `show version` into clean platform strings like "Cisco Nexus9000 C9504 9.3(11)" |
+| **NX-OS CVE scanning** | Security Analysis now maps NX-OS, IOS-XE short format, and IOS platforms to NVD CPE queries |
+| **LLDP port resolution** | Cascading fallback resolves garbage port IDs from Juniper, Linux, and Arista |
+| **sysName dedup** | Multi-homed devices discovered via different IPs no longer produce duplicate nodes |
+| **Ghost node filter** | NX-OS command artifacts eliminated from topology |
+| **Hosts file support** | `--hosts-file` enables discovery in environments without DNS |
+
+See [RELEASE_NOTES_2_5.md](RELEASE_NOTES_2_5.md) for full details.
 
 ---
 
@@ -41,75 +52,92 @@ Version 2 is a complete rewrite with a modernized architecture:
 ### Discovery Engine
 - **SNMP-first discovery** with automatic SSH fallback
 - **CDP and LLDP** neighbor detection across vendors
-- **Two-pass LLDP resolution** - correctly handles lldpLocPortNum vs ifIndex
-- **Bidirectional link validation** - only confirmed connections appear in topology
-- **Concurrent crawling** - discover 20+ devices simultaneously
-- **Depth-limited recursion** - control how far the crawler goes
-- **Exclusion patterns** - skip devices by hostname, sys_name, or sysDescr
-- **No-DNS mode** - use IPs directly from neighbor tables (home lab friendly)
+- **Platform detection via tfsm_fire** — structured parsing of `show version` output instead of regex on raw text
+- **Two-pass LLDP resolution** — correctly handles lldpLocPortNum vs ifIndex
+- **LLDP remote port resolution** — cascading fallback for Juniper/Linux garbage port IDs
+- **Bidirectional link validation** — only confirmed connections appear in topology
+- **Concurrent crawling** — discover 20+ devices simultaneously
+- **Post-discovery sysName dedup** — multi-homed devices produce one node, not duplicates
+- **Ghost node filtering** — NX-OS command artifacts eliminated from topology
+- **Depth-limited recursion** — control how far the crawler goes
+- **Exclusion patterns** — skip devices by hostname, sys_name, or sysDescr
+- **No-DNS mode** — use IPs directly from neighbor tables (home lab friendly)
+- **Hosts file resolution** — `--hosts-file` for environments without DNS
 
-### Credential Management
-- **Encrypted SQLite vault** - AES-256-GCM encryption at rest
-- **Multiple credential types** - SSH (password + key), SNMPv2c, SNMPv3
-- **Priority ordering** - try credentials in sequence until one works
-- **Credential discovery** - auto-detect which credentials work on which devices
-
-### Security Analysis (CVE Vulnerability Scanning)
-- **Platform-to-CPE mapping** - automatically parses discovered platform strings
-- **NIST NVD integration** - queries National Vulnerability Database for CVEs
-- **Severity color-coding** - CRITICAL/HIGH/MEDIUM/LOW at a glance
-- **Local CVE cache** - SQLite cache avoids repeated API calls
-- **Export reports** - CSV export with affected devices per CVE
-- **Device-centric view** - "Export by Device" shows CVE counts per device
-- **Multi-vendor support** - Cisco IOS/IOS-XE/NX-OS, Arista EOS, Juniper JUNOS, Palo Alto, Fortinet
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/scottpeterman/secure_cartography/refs/heads/main/screenshots/sec_vuln.png" alt="Security Analysis - CVE Vulnerability Scanning" width="800">
-</p>
-
-### Live Topology Preview
-- **Embedded Cytoscape.js viewer** - interactive network visualization
-- **Real-time rendering** - topology displayed immediately after discovery
-- **Vendor-specific styling** - Cisco (blue), Arista (green), Juniper (orange) with distinct colors
-- **Undiscovered peer nodes** - referenced but unreachable devices shown with warning markers
-- **Theme-aware** - visualization adapts to Cyber/Dark/Light themes
-- **Interactive controls** - fit view, auto-layout, node selection with details popup
+### Topology Viewer & Map Management
+- **Embedded Cytoscape.js viewer** — interactive network visualization with pan, zoom, drag
+- **Vendor-specific styling** — Cisco (blue), Arista (green), Juniper (orange) with platform icons
+- **Layout persistence** — save node positions to `.layout.json` sidecar files, auto-restored on reopen
+- **Focus maps** — select nodes and open a 1-hop neighborhood viewer for troubleshooting
+- **Nine layout algorithms** — Dagre, fCoSE, Cola, breadthfirst, concentric, and more
+- **Connected-only filtering** — hide orphan and leaf nodes for infrastructure-only views
+- **Undiscovered peer nodes** — referenced but unreachable devices shown with dashed borders
+- **Theme-aware** — visualization adapts to Cyber/Dark/Light themes
+- **Node editing** — double-click to update device details, poll via SNMP
 
 ### Draw.io Export
 One-click export to Draw.io format for professional network documentation:
 
-- **Cisco mxgraph stencils** - native Draw.io shapes for switches, routers, firewalls, wireless
-- **Vendor coloring** - automatic fill colors match the embedded viewer (Cisco blue, Juniper orange, Arista green)
-- **Hierarchical layout** - tree algorithm positions devices by network tier
-- **Interface labels** - port-to-port connections preserved on edges
-- **Universal compatibility** - open in Draw.io desktop, web (diagrams.net), or VS Code extension
-- **Edit and annotate** - recipients can modify layouts, add notes, highlight paths
+- **Position-matched layout** — Draw.io output mirrors your interactive viewer arrangement
+- **Cisco mxgraph stencils** — native Draw.io shapes for switches, routers, firewalls
+- **Vendor coloring** — automatic fill colors (Cisco blue, Juniper orange, Arista green)
+- **Interface labels** — port-to-port connections preserved on edges
+- **Hierarchical fallback** — tree layout when no viewer positions are available
+- **Universal compatibility** — open in Draw.io desktop, web (diagrams.net), or VS Code extension
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/scottpeterman/secure_cartography/refs/heads/main/screenshots/drawio_multivendor.png" alt="Draw.io Export - Multi-vendor topology" width="800">
 </p>
 
+### Additional Export Formats
+| Format | Use Case |
+|--------|----------|
+| **yEd (GraphML)** | Professional diagrams with automatic layouts and port labels |
+| **PNG** | Quick image export for reports and presentations |
+| **CSV** | Device inventory for spreadsheets and vulnerability analysis |
+| **JSON** | Raw topology data for custom processing |
+
+### Scale
+Secure Cartography handles production-sized networks — the topology viewer, Draw.io, and yEd exports all work at 300+ node scale with hundreds of connections.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/scottpeterman/secure_cartography/refs/heads/main/screenshots/scale.gif" alt="Scale - 181 nodes across Map Viewer, Draw.io, and yEd" width="800">
+</p>
+
+### Security Analysis (CVE Vulnerability Scanning)
+- **Platform-to-CPE mapping** — parses Cisco IOS/IOS-XE/NX-OS, Arista EOS, Juniper JUNOS, Palo Alto, Fortinet
+- **NIST NVD integration** — queries National Vulnerability Database for known CVEs
+- **Severity color-coding** — CRITICAL/HIGH/MEDIUM/LOW at a glance
+- **Local CVE cache** — SQLite cache avoids repeated API calls
+- **Export reports** — CSV export with affected devices per CVE
+- **Device-centric view** — "Export by Device" shows CVE counts per device for remediation planning
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/scottpeterman/secure_cartography/refs/heads/main/screenshots/sec_vuln.png" alt="Security Analysis - CVE Vulnerability Scanning" width="800">
+</p>
+
+### Credential Management
+- **Encrypted SQLite vault** — AES-256-GCM encryption at rest
+- **Multiple credential types** — SSH (password + key), SNMPv2c, SNMPv3
+- **Priority ordering** — try credentials in sequence until one works
+- **Credential discovery** — auto-detect which credentials work on which devices
+
 ### Interactive Device Polling
 Poll individual devices directly from the Map Viewer for on-demand identification and inventory — no full discovery required.
 
-- **SNMP fingerprinting** - identifies vendor, model, OS version via Rapid7 Recog patterns
-- **Interface inventory** - collects ifTable with MAC addresses and OUI vendor lookup
-- **ARP table collection** - neighbor IP/MAC mappings with vendor identification
+- **SNMP fingerprinting** — identifies vendor, model, OS version via Rapid7 Recog patterns
+- **Interface inventory** — collects ifTable with MAC addresses and OUI vendor lookup
+- **ARP table collection** — neighbor IP/MAC mappings with vendor identification
 - **Two operating modes**:
-  - **Local mode** - direct SNMP using pysnmp-lextudio (works on Windows/Linux/Mac)
-  - **Proxy mode** - for targets only reachable from a jump host ([SNMP Proxy](snmp_proxy/README.md))
-- **Export to Excel** - multi-sheet workbook with Summary, Interfaces, and ARP data
-
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/scottpeterman/secure_cartography/refs/heads/main/screenshots/snmp1.png" alt="Device Poll - Interface Table" width="600">
-</p>
+  - **Local mode** — direct SNMP using pysnmp-lextudio (works on Windows/Linux/Mac)
+  - **Proxy mode** — for targets only reachable from a jump host ([SNMP Proxy](snmp_proxy/README.md))
+- **Export to Excel** — multi-sheet workbook with Summary, Interfaces, and ARP data
 
 ### Themed GUI
-- **Three themes** - Cyber (cyan), Dark (gold), Light (blue)
-- **Real-time progress** - live counters, depth tracking, log output
-- **Responsive design** - UI remains interactive during discovery
-- **Click-to-inspect** - node details (hostname, IP, platform) on selection
+- **Three themes** — Cyber (cyan), Dark (gold), Light (blue)
+- **Real-time progress** — live counters, depth tracking, log output
+- **Responsive design** — UI remains interactive during discovery
+- **Click-to-inspect** — node details (hostname, IP, platform) on selection
 
 ### Supported Platforms
 | Vendor | SNMP | SSH | CVE Mapping |
@@ -118,8 +146,11 @@ Poll individual devices directly from the Map Viewer for on-demand identificatio
 | Cisco NX-OS | ✓ | ✓ | ✓ |
 | Arista EOS | ✓ | ✓ | ✓ |
 | Juniper JUNOS | ✓ | ✓ | ✓ |
+| Palo Alto PAN-OS | — | — | ✓ |
+| Fortinet FortiOS | — | — | ✓ |
 
-* Others will likely appear but testing has been limited
+Others will appear via SNMP sysDescr fingerprinting; vendor-specific testing has focused on the above.
+
 ---
 
 ## Screenshots
@@ -164,7 +195,6 @@ Poll individual devices directly from the Map Viewer for on-demand identificatio
 </table>
 
 ---
-
 ## Installation
 
 ### Prerequisites
@@ -185,7 +215,7 @@ pip install pysnmp-lextudio paramiko cryptography textfsm aiofiles
 
 # GUI
 pip install PyQt6 PyQt6-WebEngine
-```
+```scale
 
 ---
 
@@ -344,31 +374,15 @@ sc2/
 
 ## Topology Viewer
 
-The embedded topology viewer uses [Cytoscape.js](https://js.cytoscape.org/) for interactive network visualization.
+The Map Viewer is the centerpiece of the documentation workflow. Arrange your topology interactively, save the layout, and export to Draw.io — the output mirrors what you see on screen.
 
-### Features
-- **Automatic layout** - Dagre algorithm for hierarchical network arrangement
-- **Vendor coloring** - Platform-specific border and fill colors (Cisco blue, Juniper orange, Arista green)
-- **Undiscovered nodes** - Peers referenced but not crawled shown with dashed borders and ⚠ markers
-- **Edge labels** - Interface pairs displayed on connections
-- **Click inspection** - Select nodes to view device details
-- **Theme integration** - Colors adapt to current UI theme
-
-### Export Options
-| Format | Use Case |
-|--------|----------|
-| **Draw.io** | Editable diagrams with Cisco stencils for documentation, Confluence, SharePoint |
-| **yEd (GraphML)** | Professional diagrams with automatic layouts and port labels |
-| **PNG** | Quick image export for reports and presentations |
-| **CSV** | Device and connection lists for spreadsheet analysis |
-| **JSON** | Raw topology data for custom processing |
-
-### Data Flow
 ```
-Discovery Engine → map.json → Base64 encode → QWebChannel → JavaScript → Cytoscape.js
+Discovery → map.json → Interactive Viewer → Save Layout → Draw.io Export (position-matched)
+                                          → Focus Map (1-hop neighborhood)
+                                          → PNG / CSV / GraphML / JSON
 ```
 
-The viewer uses base64 encoding for reliable Python→JavaScript data transfer, avoiding escaping issues with complex JSON payloads.
+See the [Features](#topology-viewer--map-management) section above for full details.
 
 ---
 
@@ -641,6 +655,7 @@ See [README_Style_Guide.md](README_Style_Guide.md) for widget styling details.
 
 | Document | Description |
 |----------|-------------|
+| [RELEASE_NOTES_2_5.md](RELEASE_NOTES_2_5.md) | v2.5 release notes — discovery engine + topology viewer |
 | [README_Creds.md](README_Creds.md) | Credential vault API and CLI |
 | [README_scng.md](README_scng.md) | Discovery engine architecture |
 | [README_SNMP_Discovery.md](README_SNMP_Discovery.md) | SNMP collection details |
@@ -653,37 +668,32 @@ See [README_Style_Guide.md](README_Style_Guide.md) for widget styling details.
 
 ## Development Status
 
-### ✅ Complete
-- Credential vault with encryption
-- SNMP discovery (v2c, v3)
-- SSH fallback discovery
-- Async crawl engine with progress events
-- CLI for creds and discovery
-- Theme system (Cyber/Dark/Light)
-- Login dialog with vault unlock
-- Main window layout with all panels
-- Custom themed widgets
-- Discovery↔UI integration with throttled events
-- Live topology preview with Cytoscape.js
-- Vendor coloring in topology viewer
-- Undiscovered peer node visualization
-- Security Analysis with CVE vulnerability scanning
-- Export to yEd (GraphML with port labels)
-- Export to Draw.io with Cisco stencils and vendor coloring
-- Built-in help system
-- Interactive device polling (local + proxy modes)
-- Device fingerprinting via Rapid7 Recog patterns
+### ✅ Implemented
+- SNMP discovery (v2c, v3) with SSH fallback
+- Async crawl engine with concurrent workers and progress events
+- Credential vault with AES-256-GCM encryption
+- CDP and LLDP neighbor detection with bidirectional validation
+- LLDP remote port resolution (Juniper/Linux/Arista)
+- Platform detection via tfsm_fire structured parsing
+- Post-discovery sysName dedup for multi-homed devices
+- Ghost node filtering for NX-OS artifacts
+- CLI for credentials and discovery with hosts file support
+- Themed GUI (Cyber/Dark/Light) with real-time progress
+- Interactive Cytoscape.js topology viewer with nine layout algorithms
+- Layout persistence with sidecar .layout.json files
+- Focus maps with 1-hop neighborhood expansion
+- Position-matched Draw.io export with Cisco stencils and vendor coloring
+- Export to yEd GraphML, PNG, CSV, JSON
+- CVE vulnerability scanning via NIST NVD (IOS, IOS-XE, NX-OS, EOS, JUNOS, PAN-OS, FortiOS)
+- Interactive SNMP device polling with Rapid7 Recog fingerprinting
 - OUI vendor lookup for MAC addresses
 
 ### 📋 Planned
-- Map enhancement tools (manual node positioning, annotations)
 - Credential auto-discovery integration
 - Settings persistence
-- Export topology as PNG/SVG
-- Topology diff (compare discoveries)
+- Topology diff (compare discoveries over time)
 
 ---
-
 ## Technical Notes
 
 ### Threading Architecture

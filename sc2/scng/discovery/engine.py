@@ -59,6 +59,7 @@ from .models import (
     DeviceVendor, DiscoveryProtocol, NeighborProtocol,
 )
 from .snmp import (
+    SNMPWalker,
     get_system_info,
     get_interface_table,
     get_cdp_neighbors,
@@ -81,6 +82,11 @@ from .events import (
     EventEmitter, EventCallback, EventType, LogLevel,
     ConsoleEventPrinter, DiscoveryEvent,
 )
+
+# Emulation mode flag — set by ssh.client when enable_emulation() is called.
+# When active, skip real OS-level DNS so the SSH client can handle hostname
+# resolution via ip_lookup.json instead.
+from .ssh import client as _ssh_client_module
 
 # Import from scng.creds for vault integration
 # Try multiple import paths to handle different package structures
@@ -149,64 +155,143 @@ def is_mac_address(value: str) -> bool:
 
 def extract_platform(sys_descr: str, vendor: str = None) -> str:
     """
-    Extract a concise platform string from sysDescr.
+    Extract a concise platform string from sysDescr or show version output.
+
+    Handles both SNMP sysDescr (single-line) and SSH show version (multi-line).
 
     Examples:
-        "Arista Networks EOS version 4.33.1F running on an Arista vEOS-lab"
+        SNMP: "Arista Networks EOS version 4.33.1F running on an Arista vEOS-lab"
         -> "Arista vEOS-lab EOS 4.33.1F"
 
-        "Cisco IOS Software, IOSv Software (VIOS-ADVENTERPRISEK9-M), Version 15.6(2)T..."
+        SNMP: "Cisco IOS Software, IOSv Software (VIOS-ADVENTERPRISEK9-M), Version 15.6(2)T..."
         -> "Cisco IOSv IOS 15.6(2)T"
+
+        SSH: "Cisco Nexus Operating System (NX-OS) Software\\n...\\nNXOS: version 9.3(11)\\n..."
+        -> "Cisco NX-OS 9.3(11)"
     """
     if not sys_descr:
-        return "Unknown"
+        return vendor or "Unknown"
 
-    # Arista pattern
+    # === Arista ===
     if 'Arista' in sys_descr:
-        # Extract model and version
         model = "Arista"
         version = ""
         if 'vEOS-lab' in sys_descr:
             model = "Arista vEOS-lab"
         elif 'vEOS' in sys_descr:
             model = "Arista vEOS"
-        # Extract EOS version
-        eos_match = re.search(r'EOS version (\S+)', sys_descr)
+        else:
+            # Try to extract hardware model from show version
+            hw_match = re.search(r'Arista\s+(DCS-\S+|[A-Z]+-\S+)', sys_descr)
+            if hw_match:
+                model = f"Arista {hw_match.group(1)}"
+        eos_match = re.search(r'(?:EOS version|Software image version:?)\s*[:\s]*(\S+)', sys_descr)
         if eos_match:
             version = f"EOS {eos_match.group(1)}"
         return f"{model} {version}".strip()
 
-    # Cisco IOS pattern
-    if 'Cisco IOS' in sys_descr or 'Cisco' in sys_descr:
-        # Try to extract model info
-        model = "Cisco"
+    # === Cisco NX-OS (check before generic Cisco) ===
+    if 'NX-OS' in sys_descr or 'Nexus' in sys_descr:
+        model = "Cisco NX-OS"
+        # Extract hardware model: "cisco Nexus9000 C9396PX" or "Nexus 9396PX"
+        hw_match = re.search(r'[Cc]isco\s+(Nexus\S+\s+\S+)', sys_descr)
+        if hw_match:
+            model = f"Cisco {hw_match.group(1)}"
+        else:
+            hw_match = re.search(r'(Nexus\s*\S+)', sys_descr)
+            if hw_match:
+                model = f"Cisco {hw_match.group(1)}"
+        # Extract version: "NXOS: version 9.3(11)" or "system:  version 9.3(11)"
+        ver_match = re.search(r'(?:NXOS|system|NXOS image file).*?version\s+(\S+)', sys_descr, re.IGNORECASE)
+        if not ver_match:
+            ver_match = re.search(r'NX-OS.*?Version\s+(\S+)', sys_descr)
+        if ver_match:
+            return f"{model} {ver_match.group(1)}"
+        return model
 
-        # Check for specific platforms
-        if 'IOSv' in sys_descr or 'VIOS' in sys_descr:
+    # === Cisco IOS / IOS-XE ===
+    if 'Cisco IOS' in sys_descr or ('Cisco' in sys_descr and 'IOS' in sys_descr):
+        model = "Cisco"
+        if 'IOS-XE' in sys_descr or 'IOS XE' in sys_descr or 'IOSXE' in sys_descr:
+            model = "Cisco IOS-XE"
+        elif 'IOSv' in sys_descr or 'VIOS' in sys_descr:
             model = "Cisco IOSv"
         elif 'vios_l2' in sys_descr:
-            model = "Cisco IOS"  # L2 switch
-        elif '7200' in sys_descr:
+            model = "Cisco IOS"
+
+        # Try multiple version formats
+        # SNMP: "Version 15.6(2)T,"
+        ver_match = re.search(r'Version\s+(\S+?)[,\s]', sys_descr)
+        if ver_match:
+            return f"{model} {ver_match.group(1)}"
+        return model
+
+    # === Cisco generic (WLC, other) ===
+    if 'Cisco' in sys_descr:
+        model = "Cisco"
+        # Check for specific platforms
+        if '7200' in sys_descr:
             model = "Cisco 7200"
         elif '7206VXR' in sys_descr:
             model = "Cisco 7206VXR"
-
-        # Extract IOS version
-        version_match = re.search(r'Version (\S+),', sys_descr)
-        if version_match:
-            return f"{model} IOS {version_match.group(1)}"
-
+        elif 'WLC' in sys_descr or 'Wireless' in sys_descr:
+            model = "Cisco WLC"
+        elif 'ASA' in sys_descr:
+            model = "Cisco ASA"
+        ver_match = re.search(r'Version\s+(\S+?)[,\s]', sys_descr)
+        if ver_match:
+            return f"{model} {ver_match.group(1)}"
         return model
 
-    # Juniper pattern
-    if 'Juniper' in sys_descr or 'JUNOS' in sys_descr:
-        version_match = re.search(r'JUNOS (\S+)', sys_descr)
-        if version_match:
-            return f"Juniper JUNOS {version_match.group(1)}"
-        return "Juniper"
+    # === Juniper ===
+    if 'Juniper' in sys_descr or 'JUNOS' in sys_descr or 'junos' in sys_descr.lower():
+        model = "Juniper"
+        # SNMP: "Juniper Networks, Inc. qfx5100-48s..."
+        hw_match = re.search(r'Juniper\s+Networks.*?((?:qfx|ex|mx|srx|ptx)\S+)', sys_descr, re.IGNORECASE)
+        if hw_match:
+            model = f"Juniper {hw_match.group(1).upper()}"
+        ver_match = re.search(r'JUNOS\s+(\S+)', sys_descr, re.IGNORECASE)
+        if ver_match:
+            return f"{model} JUNOS {ver_match.group(1)}"
+        return model
 
-    # Default: return first 50 chars
-    return sys_descr[:50].strip()
+    # === Aruba / HP ProCurve (SSH show version) ===
+    if 'Aruba' in sys_descr or 'ProCurve' in sys_descr or 'ArubaOS' in sys_descr:
+        model = "Aruba"
+        hw_match = re.search(r'Aruba\s+(JL\S+\s+\S+|[A-Z0-9]+-\S+)', sys_descr)
+        if hw_match:
+            model = f"Aruba {hw_match.group(1)}"
+        ver_match = re.search(r'(?:Software revision|revision)\s*[:\s]*(\S+)', sys_descr, re.IGNORECASE)
+        if ver_match:
+            return f"{model} {ver_match.group(1)}"
+        return model
+
+    # === Palo Alto ===
+    if 'Palo Alto' in sys_descr or 'PAN-OS' in sys_descr:
+        model = "Palo Alto"
+        ver_match = re.search(r'PAN-OS\s+(\S+)', sys_descr)
+        if ver_match:
+            return f"{model} PAN-OS {ver_match.group(1)}"
+        ver_match = re.search(r'sw-version:\s*(\S+)', sys_descr)
+        if ver_match:
+            return f"{model} {ver_match.group(1)}"
+        return model
+
+    # === CloudGenix / Prisma SD-WAN ===
+    if 'CloudGenix' in sys_descr or 'ION' in sys_descr:
+        model = "CloudGenix ION"
+        ver_match = re.search(r'(?:version|Version)\s+(\S+)', sys_descr)
+        if ver_match:
+            return f"{model} {ver_match.group(1)}"
+        return model
+
+    # === Vendor fallback: use vendor string if patterns didn't match ===
+    if vendor and vendor.lower() != 'unknown':
+        return vendor.capitalize()
+
+    # Default: first line, max 50 chars
+    first_line = sys_descr.split('\n')[0].strip()
+    return first_line[:50] if first_line else "Unknown"
 
 
 class DiscoveryEngine:
@@ -259,6 +344,7 @@ class DiscoveryEngine:
         no_dns: bool = False,
         max_concurrent: int = 20,
         event_emitter: Optional[EventEmitter] = None,
+        hosts_file: Optional[Path] = None,
     ):
         """
         Initialize discovery engine.
@@ -271,6 +357,9 @@ class DiscoveryEngine:
             no_dns: Disable DNS lookups (targets must be IPs)
             max_concurrent: Maximum concurrent device discoveries (default 20)
             event_emitter: Event emitter for GUI integration (created if not provided)
+            hosts_file: Path to hosts-format file for name→IP resolution.
+                        Checked before DNS when resolving neighbor hostnames.
+                        Format: IP  shortname  FQDN  # optional comment
         """
         self.vault = vault
         self.snmp_engine = snmp_engine or SnmpEngine()
@@ -278,6 +367,11 @@ class DiscoveryEngine:
         self.verbose = verbose
         self.no_dns = no_dns
         self.max_concurrent = max_concurrent
+
+        # Local hosts file: hostname → IP (checked before DNS)
+        self._hosts_map: Dict[str, str] = {}
+        if hosts_file:
+            self._hosts_map = self._load_hosts_file(hosts_file)
 
         # Event system
         self.events = event_emitter or EventEmitter()
@@ -289,6 +383,11 @@ class DiscoveryEngine:
         # Deduplication: normalized identifiers we've claimed or processed
         # In asyncio single-thread model, no lock needed between awaits
         self._claimed: Set[str] = set()
+
+        # Track discovered sysNames separately — _claimed includes queued
+        # targets that haven't been discovered yet, so we can't use it
+        # to detect duplicate discoveries from concurrent batches.
+        self._discovered_sysnames: Set[str] = set()
 
         # Credential preference cache: /24 subnet -> (cred_name, protocol)
         # When a credential works for an IP, remember it for the subnet
@@ -409,9 +508,121 @@ class DiscoveryEngine:
     def reset_state(self) -> None:
         """Reset discovery state for a new crawl."""
         self._claimed.clear()
+        self._discovered_sysnames.clear()
         self._subnet_preferences.clear()
         self._credential_cache.clear()
         self.events.reset_stats()
+
+    # =========================================================================
+    # Hosts File Resolution
+    # =========================================================================
+
+    def _load_hosts_file(self, hosts_path: Path) -> Dict[str, str]:
+        """
+        Load a hosts-format file into a hostname → IP lookup dict.
+
+        Parses lines of the form:
+            IP_ADDRESS   shortname   FQDN   # optional comment
+
+        Indexes on every non-IP column (lowercased), so both short names
+        and FQDNs resolve.  Skips blank lines and comment-only lines.
+        """
+        hosts: Dict[str, str] = {}
+
+        if not hosts_path.exists():
+            self._vprint(f"Hosts file not found: {hosts_path}", 1)
+            return hosts
+
+        try:
+            with open(hosts_path) as f:
+                for line in f:
+                    line = line.split('#')[0].strip()
+                    if not line:
+                        continue
+
+                    parts = line.split()
+                    if len(parts) < 2:
+                        continue
+
+                    ip = parts[0]
+                    if not is_ip_address(ip):
+                        continue
+
+                    for name in parts[1:]:
+                        name_lower = name.lower().rstrip('.')
+                        if name_lower and not is_ip_address(name_lower):
+                            hosts[name_lower] = ip
+
+            self._vprint(
+                f"Loaded hosts file: {hosts_path} "
+                f"({len(hosts)} name→IP entries)", 1
+            )
+        except Exception as e:
+            self._vprint(f"Failed to load hosts file: {e}", 1)
+
+        return hosts
+
+    def _resolve_from_hosts(self, name: str) -> Optional[str]:
+        """
+        Look up a hostname in the local hosts file.
+
+        Returns the IP address or None if not found.
+        """
+        if not self._hosts_map or not name:
+            return None
+
+        lookup = name.lower().rstrip('.')
+
+        if lookup in self._hosts_map:
+            return self._hosts_map[lookup]
+
+        return None
+
+    # =========================================================================
+    # sysName Resolution (for MAC-named LLDP neighbors)
+    # =========================================================================
+
+    async def _resolve_sysname(self, ip: str) -> Optional[str]:
+        """
+        Quick SNMP sysName probe on a neighbor IP.
+
+        Used when LLDP reports a MAC as the device name but gives us
+        a management IP. Single SNMP GET with short timeout — if it
+        fails, caller falls back to IP-based queuing.
+        """
+        try:
+            from .snmp.collectors.system import get_sys_name
+
+            # Use first available credential
+            auth = None
+            if self.vault and HAS_VAULT:
+                creds = self.vault.get_credentials(CredentialType.SNMPV2C)
+                if creds:
+                    auth = self._build_auth(creds[0])
+
+            # Check subnet preference cache for a known-good credential
+            subnet = self._get_subnet(ip)
+            if subnet in self._subnet_preferences:
+                cached_name, cached_auth = self._subnet_preferences[subnet]
+                if cached_auth:
+                    auth = cached_auth
+
+            if not auth:
+                return None
+
+            walker = SNMPWalker(
+                engine=self.snmp_engine,
+                auth=auth,
+                default_timeout=3.0,
+                verbose=self.verbose,
+            )
+
+            name = await get_sys_name(ip, auth, walker, timeout=3.0)
+            if name:
+                return name.strip().rstrip('.')
+        except Exception:
+            pass
+        return None
 
     # =========================================================================
     # Credential Management
@@ -719,9 +930,19 @@ class DiscoveryEngine:
                     if normalized != ssh_result.hostname:
                         device.fqdn = ssh_result.hostname
 
-                # Get version info from raw output if available
-                if ssh_result.raw_output.get('show_version'):
-                    device.sys_descr = ssh_result.raw_output['show_version'][:200]
+                # Build sys_descr from parsed version fields (clean platform string)
+                if ssh_result.platform or ssh_result.version:
+                    vendor_str = ssh_result.vendor.value.capitalize() if ssh_result.vendor else ""
+                    parts = [vendor_str, ssh_result.platform or "", ssh_result.version or ""]
+                    device.sys_descr = ' '.join(p for p in parts if p)
+                elif ssh_result.raw_output.get('show_version'):
+                    # tfsm_fire didn't extract structured fields — fall back
+                    # to extract_platform() regex parsing on the raw output
+                    raw_version = ssh_result.raw_output['show_version']
+                    device.sys_descr = extract_platform(
+                        raw_version,
+                        ssh_result.vendor.value if ssh_result.vendor else None,
+                    )
 
                 # Process neighbors - normalize their hostnames too
                 for neighbor in ssh_result.neighbors:
@@ -832,25 +1053,36 @@ class DiscoveryEngine:
             hostname = target
         else:
             hostname = target
-            if self.no_dns:
-                # DNS disabled - fail fast for non-IP targets
+            device_ip = None
+
+            # Try local hosts file first (avoids DNS dependency)
+            hosts_ip = self._resolve_from_hosts(target)
+            if hosts_ip:
+                device_ip = hosts_ip
+                self._vprint(f"Resolved {target} → {hosts_ip} via hosts file", 2)
+
+            # Emulation mode: skip real DNS, let SSH client handle resolution
+            if not device_ip and getattr(_ssh_client_module, 'EMULATION_ENABLED', False):
+                device_ip = target
+
+            # Fall back to DNS
+            if not device_ip and not self.no_dns:
+                try:
+                    fqdn = build_fqdn(target, domains)
+                    device_ip = socket.gethostbyname(fqdn)
+                except socket.gaierror:
+                    pass
+
+            if not device_ip:
                 return Device(
                     hostname=target,
                     ip_address="",
                     discovery_success=False,
-                    discovery_errors=[f"DNS disabled, cannot resolve hostname: {target}"],
-                    depth=depth,
-                )
-            try:
-                fqdn = build_fqdn(target, domains)
-                device_ip = socket.gethostbyname(fqdn)
-            except socket.gaierror:
-                # Create failed device
-                return Device(
-                    hostname=target,
-                    ip_address="",
-                    discovery_success=False,
-                    discovery_errors=[f"DNS resolution failed for {target}"],
+                    discovery_errors=[
+                        f"Resolution failed for {target} "
+                        f"(hosts file: {'miss' if not hosts_ip else 'hit'}, "
+                        f"DNS: {'disabled' if self.no_dns else 'failed'})"
+                    ],
                     depth=depth,
                 )
 
@@ -1208,6 +1440,21 @@ class DiscoveryEngine:
 
                 device: Device = device_or_error
 
+                # Post-discovery dedup: two IPs in the same concurrent
+                # batch can resolve to the same device (same sysName).
+                # Check against actually-discovered sysNames, not the
+                # _claimed set (which includes queued-but-not-yet-discovered).
+                if device.discovery_success and device.sys_name:
+                    norm_sysname = self._normalize_identifier(device.sys_name)
+                    if norm_sysname in self._discovered_sysnames:
+                        self._vprint(
+                            f"Dedup: {target} is {device.sys_name} "
+                            f"(already discovered via another IP)", 1
+                        )
+                        self._register_device(device)
+                        continue
+                    self._discovered_sysnames.add(norm_sysname)
+
                 # Register all identifiers to prevent rediscovery
                 self._register_device(device)
 
@@ -1250,45 +1497,94 @@ class DiscoveryEngine:
                     # Queue neighbors for next depth
                     if depth < max_depth:
                         for neighbor in device.neighbors:
-                            # Determine next target - prefer hostname, fall back to IP
-                            next_target = neighbor.remote_device
-                            next_ip = neighbor.remote_ip
+                            device_name = neighbor.remote_device
+                            neighbor_ip = neighbor.remote_ip
 
-                            # Skip MAC addresses (chassis_id leaking through)
-                            if next_target and is_mac_address(next_target):
-                                self.events.neighbor_skipped(
-                                    next_target, "MAC address", device.hostname
-                                )
+                            # MAC as device name: LLDP sometimes reports
+                            # chassis_id (MAC) instead of sysName. Try to
+                            # resolve the real hostname via SNMP sysName probe.
+                            if device_name and is_mac_address(device_name):
+                                if neighbor_ip and not is_mac_address(neighbor_ip):
+                                    resolved_name = await self._resolve_sysname(
+                                        neighbor_ip
+                                    )
+                                    if resolved_name:
+                                        self._vprint(
+                                            f"Resolved MAC {device_name} → "
+                                            f"{resolved_name} via sysName "
+                                            f"({neighbor_ip})", 2
+                                        )
+                                        device_name = resolved_name
+                                    else:
+                                        # sysName probe failed — still crawl
+                                        # by IP, use IP as dedup key
+                                        self._vprint(
+                                            f"sysName probe failed for "
+                                            f"{device_name} ({neighbor_ip}), "
+                                            f"queuing by IP", 2
+                                        )
+                                        device_name = None
+                                else:
+                                    # MAC name and no usable IP — skip
+                                    self.events.neighbor_skipped(
+                                        device_name, "MAC address, no IP",
+                                        device.hostname,
+                                    )
+                                    continue
+
+                            if neighbor_ip and is_mac_address(neighbor_ip):
+                                neighbor_ip = None
+
+                            # Dedup by device name (sysName) — that's the
+                            # device identity. IP is just a transport handle;
+                            # multi-homed devices have many IPs but one name.
+                            dedup_key = device_name
+                            if not dedup_key:
+                                dedup_key = neighbor_ip
+
+                            if not dedup_key:
                                 continue
 
-                            if next_ip and is_mac_address(next_ip):
-                                next_ip = None  # Clear invalid IP
+                            # Crawl target: prefer IP (avoids DNS failures),
+                            # fall back to hosts file, then hostname.
+                            if neighbor_ip:
+                                crawl_target = neighbor_ip
+                            elif device_name:
+                                hosts_ip = self._resolve_from_hosts(device_name)
+                                if hosts_ip:
+                                    crawl_target = hosts_ip
+                                    self._vprint(
+                                        f"Resolved {device_name} → {hosts_ip} "
+                                        f"via hosts file", 2
+                                    )
+                                else:
+                                    crawl_target = device_name
+                            else:
+                                crawl_target = None
 
-                            # Use IP if no hostname, or if --no-dns and IP available
-                            if not next_target or (self.no_dns and next_ip):
-                                next_target = next_ip or next_target
-
-                            if not next_target:
+                            if not crawl_target:
                                 continue
 
                             # Atomically claim the target
-                            if self._try_claim(next_target):
-                                next_batch.append((next_target, depth + 1))
+                            if self._try_claim(dedup_key):
+                                next_batch.append((crawl_target, depth + 1))
 
-                                # Also claim the IP if we have it (prevent duplicate via IP)
-                                if next_ip and next_ip != next_target:
-                                    self._try_claim(next_ip)
+                                # Also claim the other identifier
+                                if neighbor_ip and neighbor_ip != dedup_key:
+                                    self._try_claim(neighbor_ip)
+                                if device_name and device_name != dedup_key:
+                                    self._try_claim(device_name)
 
                                 # Emit neighbor queued event
                                 self.events.neighbor_queued(
-                                    target=next_target,
-                                    ip=next_ip if next_ip != next_target else None,
+                                    target=crawl_target,
+                                    ip=neighbor_ip if neighbor_ip != crawl_target else None,
                                     from_device=device.hostname,
                                     depth=depth + 1,
                                 )
                             else:
                                 self.events.neighbor_skipped(
-                                    next_target, "already claimed", device.hostname
+                                    dedup_key, "already claimed", device.hostname
                                 )
 
                 else:
@@ -1394,6 +1690,11 @@ class DiscoveryEngine:
                 if not neighbor.remote_device:
                     continue
 
+                # Filter parsing artifacts
+                peer_check = neighbor.remote_device.strip().lower().strip("'\"")
+                if peer_check in ('detail', '^', '%', 'sho', '') or len(peer_check) < 2:
+                    continue
+
                 local_if = self._normalize_interface(neighbor.local_interface)
                 remote_if = self._normalize_interface(neighbor.remote_interface)
 
@@ -1470,11 +1771,20 @@ class DiscoveryEngine:
                 continue
             seen_devices.add(canonical_name)
 
+            # Platform: SSH devices have clean sys_descr from tfsm_fire,
+            # SNMP devices need extract_platform() to parse raw sysDescr
+            if device.discovered_via == DiscoveryProtocol.SSH and device.sys_descr:
+                device_platform = device.sys_descr
+            else:
+                device_platform = extract_platform(
+                    device.sys_descr,
+                    device.vendor.value if device.vendor else None,
+                )
+
             node = {
                 "node_details": {
                     "ip": device.ip_address,
-                    "platform": extract_platform(device.sys_descr,
-                                                 device.vendor.value if device.vendor else None)
+                    "platform": device_platform,
                 },
                 "peers": {}
             }
@@ -1483,8 +1793,25 @@ class DiscoveryEngine:
             peer_connections: Dict[str, Dict] = {}
             used_local_interfaces: Set[str] = set()  # Track used interfaces globally for this device
 
-            for neighbor in device.neighbors:
+            # Sort: prefer neighbors with real hostnames over bare MACs.
+            # Multiple LLDP remTable entries can exist for the same local
+            # port (firmware vs OS LLDP agent, different remIndex values).
+            # The used_local_interfaces gate below is first-one-wins, so
+            # we must ensure the named entry comes first regardless of
+            # SNMP walk order (which shifts with lldpRemTimeMark).
+            sorted_neighbors = sorted(
+                device.neighbors,
+                key=lambda n: (1 if is_mac_address(n.remote_device) else 0),
+            )
+
+            for neighbor in sorted_neighbors:
                 if not neighbor.remote_device:
+                    continue
+
+                # Filter parsing artifacts — NX-OS command echo/error
+                # markers that leak through TextFSM as phantom neighbors
+                peer_check = neighbor.remote_device.strip().lower().strip("'\"")
+                if peer_check in ('detail', '^', '%', 'sho', '') or len(peer_check) < 2:
                     continue
 
                 local_if = self._normalize_interface(neighbor.local_interface)
@@ -1520,12 +1847,28 @@ class DiscoveryEngine:
                         continue
                 # else: peer not discovered (leaf/edge) - trust unidirectional claim
 
-                # Get peer platform
-                peer_platform = extract_platform(neighbor.remote_description) if neighbor.remote_description else None
+                # Get peer platform — priority:
+                # 1. CDP remote_platform (e.g., "N9K-C9372PX") — most specific
+                # 2. Discovered device sys_descr (already parsed by tfsm_fire for SSH)
+                # 3. LLDP remote_description through extract_platform()
+                # 4. "Unknown"
+                peer_platform = None
+                if neighbor.remote_platform:
+                    peer_platform = neighbor.remote_platform
                 if peer_name in device_info:
                     peer_dev = device_info[peer_name]
-                    peer_platform = extract_platform(peer_dev.sys_descr,
-                                                     peer_dev.vendor.value if peer_dev.vendor else None)
+                    if peer_dev.sys_descr:
+                        # sys_descr from SSH is already clean ("Cisco C9372PX 9.3(11)")
+                        # sys_descr from SNMP is raw and needs extract_platform()
+                        if peer_dev.discovered_via == DiscoveryProtocol.SSH:
+                            peer_platform = peer_dev.sys_descr
+                        else:
+                            peer_platform = extract_platform(
+                                peer_dev.sys_descr,
+                                peer_dev.vendor.value if peer_dev.vendor else None,
+                            )
+                elif not peer_platform and neighbor.remote_description:
+                    peer_platform = extract_platform(neighbor.remote_description)
 
                 if canonical_peer not in peer_connections:
                     peer_connections[canonical_peer] = {

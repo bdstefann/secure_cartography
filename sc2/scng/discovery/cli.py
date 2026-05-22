@@ -49,6 +49,18 @@ from .events import (
 )
 
 
+def _activate_emulation(args) -> bool:
+    """Activate NetEmulate mode if --emulate was passed. Returns True if enabled."""
+    emulate_path = getattr(args, 'emulate', None)
+    if not emulate_path:
+        return False
+
+    from .ssh.client import enable_emulation
+    count = enable_emulation(str(emulate_path))
+    print(f"[EMULATION] Enabled — {count} IPs loaded from {emulate_path}")
+    return True
+
+
 def create_parser() -> argparse.ArgumentParser:
     """Create argument parser."""
     parser = argparse.ArgumentParser(
@@ -71,6 +83,12 @@ Examples:
 
   # High concurrency for large networks
   python -m scng.discovery crawl 192.168.1.1 -d 5 --concurrency 30
+
+  # NetEmulate mode (mock devices on localhost)
+  python -m scng.discovery crawl 10.88.131.208 -d 5 --emulate ../netemulate/ip_lookup.json --no-dns
+
+  # Rebuild topology from collected device data
+  python -m scng.discovery rebuild ./output -v
 
   # Verbose with timestamps
   python -m scng.discovery crawl 192.168.1.1 -v --timestamps
@@ -226,6 +244,60 @@ Examples:
         dest='json_events',
         help='Output events as JSON lines (for GUI integration)'
     )
+    crawl_parser.add_argument(
+        '--emulate',
+        type=Path,
+        metavar='LOOKUP_JSON',
+        help='Enable NetEmulate mode with ip_lookup.json path'
+    )
+    crawl_parser.add_argument(
+        '--hosts-file',
+        type=Path,
+        dest='hosts_file',
+        metavar='FILE',
+        help='Hosts-format file for name→IP resolution (checked before DNS)'
+    )
+
+    # Add --emulate and --hosts-file to device/test parsers too
+    for p in (device_parser, test_parser):
+        p.add_argument(
+            '--emulate',
+            type=Path,
+            metavar='LOOKUP_JSON',
+            help='Enable NetEmulate mode with ip_lookup.json path'
+        )
+        p.add_argument(
+            '--hosts-file',
+            type=Path,
+            dest='hosts_file',
+            metavar='FILE',
+            help='Hosts-format file for name→IP resolution (checked before DNS)'
+        )
+
+    # --- rebuild command ---
+    rebuild_parser = subparsers.add_parser(
+        'rebuild',
+        help='Rebuild topology map from collected device.json files',
+        description='Read all device.json files from a discovery output folder '
+                    'and regenerate map.json. Recovers devices that were collected '
+                    'but missed during the live crawl topology generation.'
+    )
+    rebuild_parser.add_argument(
+        'input_dir',
+        type=Path,
+        help='Discovery output directory containing device folders'
+    )
+    rebuild_parser.add_argument(
+        '-o', '--output',
+        type=Path,
+        dest='output',
+        help='Output map.json path (default: <input_dir>/map.json)'
+    )
+    rebuild_parser.add_argument(
+        '-v', '--verbose',
+        action='store_true',
+        help='Show details during rebuild'
+    )
 
     return parser
 
@@ -250,6 +322,8 @@ class JsonEventPrinter:
 
 async def cmd_test(args) -> int:
     """Run quick test discovery with community string."""
+    _activate_emulation(args)
+
     if not HAS_PYSNMP:
         print("ERROR: pysnmp not installed")
         print("Install with: pip install pysnmp-lextudio")
@@ -269,6 +343,7 @@ async def cmd_test(args) -> int:
         default_timeout=args.timeout,
         verbose=args.verbose,
         no_dns=args.no_dns,
+        hosts_file=getattr(args, 'hosts_file', None),
     )
 
     # Discover
@@ -322,6 +397,8 @@ async def cmd_test(args) -> int:
 
 async def cmd_device(args) -> int:
     """Discover device using vault credentials."""
+    _activate_emulation(args)
+
     # Import vault - try multiple paths for different package structures
     CredentialVault = None
     try:
@@ -376,6 +453,7 @@ async def cmd_device(args) -> int:
         verbose=args.verbose,
         no_dns=args.no_dns,
         event_emitter=emitter,
+        hosts_file=getattr(args, 'hosts_file', None),
     )
 
     # Discover
@@ -425,6 +503,8 @@ async def cmd_device(args) -> int:
 
 async def cmd_crawl(args) -> int:
     """Run recursive network discovery with event-driven output."""
+    _activate_emulation(args)
+
     # Import vault - try multiple paths for different package structures
     CredentialVault = None
     try:
@@ -492,6 +572,7 @@ async def cmd_crawl(args) -> int:
         max_concurrent=args.concurrency,
         default_timeout=args.timeout,
         event_emitter=emitter,
+        hosts_file=getattr(args, 'hosts_file', None),
     )
 
     # Print configuration (unless JSON mode)
@@ -528,6 +609,90 @@ async def cmd_crawl(args) -> int:
     return 0 if result.successful > 0 else 1
 
 
+def cmd_rebuild(args) -> int:
+    """Rebuild topology map from collected device.json files."""
+    input_dir = args.input_dir
+    verbose = args.verbose
+
+    if not input_dir.is_dir():
+        print(f"ERROR: {input_dir} is not a directory")
+        return 1
+
+    # Scan for device.json files
+    device_files = list(input_dir.glob('*/device.json'))
+    if not device_files:
+        print(f"ERROR: No device.json files found in {input_dir}")
+        return 1
+
+    print(f"Scanning {input_dir}...")
+    print(f"Found {len(device_files)} device folders")
+
+    # Load all devices
+    devices = []
+    load_errors = 0
+    for device_file in sorted(device_files):
+        try:
+            with open(device_file) as f:
+                data = json.load(f)
+
+            device = Device.from_dict(data)
+
+            # Only include successfully discovered devices
+            if not device.discovery_success:
+                if verbose:
+                    print(f"  SKIP: {device_file.parent.name} (discovery_success=false)")
+                continue
+
+            devices.append(device)
+            if verbose:
+                neighbor_count = len(device.neighbors)
+                via = device.discovered_via.value if device.discovered_via else "?"
+                print(f"  OK: {device.hostname} ({device.ip_address}) "
+                      f"via {via}, {neighbor_count} neighbors")
+
+        except Exception as e:
+            load_errors += 1
+            print(f"  ERROR: {device_file}: {e}")
+
+    if not devices:
+        print("ERROR: No valid devices loaded")
+        return 1
+
+    print(f"\nLoaded {len(devices)} devices ({load_errors} errors)")
+
+    # Create a minimal engine for topology generation
+    engine = DiscoveryEngine(verbose=verbose)
+
+    # Generate topology map
+    print("Generating topology map...")
+    topology = engine._generate_topology_map(devices)
+
+    # Count stats
+    node_count = len(topology)
+    edge_count = 0
+    connection_count = 0
+    for device_data in topology.values():
+        for peer_data in device_data.get('peers', {}).values():
+            edge_count += 1
+            connection_count += len(peer_data.get('connections', []))
+
+    # Write output
+    output_path = args.output or (input_dir / 'map.json')
+    with open(output_path, 'w') as f:
+        json.dump(topology, f, indent=2)
+
+    print(f"\n{'=' * 60}")
+    print(f"REBUILD COMPLETE")
+    print(f"{'=' * 60}")
+    print(f"Devices loaded:    {len(devices)}")
+    print(f"Topology nodes:    {node_count}")
+    print(f"Topology edges:    {edge_count}")
+    print(f"Total connections: {connection_count}")
+    print(f"Output: {output_path}")
+
+    return 0
+
+
 def main():
     """Main entry point."""
     parser = create_parser()
@@ -544,6 +709,8 @@ def main():
         return asyncio.run(cmd_device(args))
     elif args.command == 'crawl':
         return asyncio.run(cmd_crawl(args))
+    elif args.command == 'rebuild':
+        return cmd_rebuild(args)
     else:
         parser.print_help()
         return 1
