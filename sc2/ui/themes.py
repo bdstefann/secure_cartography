@@ -29,6 +29,7 @@ class ThemeName(str, Enum):
     CYBER = "cyber"
     DARK = "dark"
     LIGHT = "light"
+    NORD = "nord"
 
 
 @dataclass
@@ -223,10 +224,56 @@ LIGHT_THEME = ThemeColors(
     scrollbar_hover="#2563eb",
 )
 
+NORD_THEME = ThemeColors(
+    name="Nord",
+    icon="❄️",
+    is_dark=True,
+
+    # Backgrounds - soft polar-night slate (lighter than Cyber/Dark, easy on the eyes)
+    bg_primary="#2e3440",
+    bg_secondary="#3b4252",
+    bg_tertiary="#434c5e",
+    bg_input="#2b303b",
+    bg_hover="#4c566a",
+    bg_selected="#48546b",
+    bg_disabled="#333947",
+    bg_overlay="#272b35",
+
+    # Accent - muted frost blue (calm, not neon)
+    accent="#88c0d0",
+    accent_dim="#6a9aa8",
+    accent_hover="#9fd0de",
+    accent_pressed="#7ab0c0",
+    accent_danger="#bf616a",
+    accent_success="#a3be8c",
+    accent_warning="#ebcb8b",
+    accent_info="#81a1c1",
+
+    # Text - snow-storm whites cooling into frost
+    text_primary="#eceff4",
+    text_secondary="#d8dee9",
+    text_muted="#8a93a5",
+    text_disabled="#5c6478",
+    text_accent="#88c0d0",
+    text_on_accent="#2e3440",
+
+    # Borders - frost variants
+    border_primary="#88c0d0",
+    border_secondary="#434c5e",
+    border_dim="#3b4252",
+    border_hover="#81a1c1",
+
+    # Scrollbar
+    scrollbar_bg="#3b4252",
+    scrollbar_handle="#4c566a",
+    scrollbar_hover="#88c0d0",
+)
+
 THEMES: Dict[ThemeName, ThemeColors] = {
     ThemeName.CYBER: CYBER_THEME,
     ThemeName.DARK: DARK_THEME,
     ThemeName.LIGHT: LIGHT_THEME,
+    ThemeName.NORD: NORD_THEME,
 }
 
 
@@ -1949,6 +1996,7 @@ __all__ = [
     'CYBER_THEME',
     'DARK_THEME',
     'LIGHT_THEME',
+    'NORD_THEME',
     'THEMES',
     # Classes
     'ThemeManager',

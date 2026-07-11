@@ -51,6 +51,7 @@ class AppSettings:
             "cyber": ThemeName.CYBER,
             "dark": ThemeName.DARK,
             "light": ThemeName.LIGHT,
+            "nord": ThemeName.NORD,
         }
         return theme_map.get(self.theme, ThemeName.LIGHT)  # Default to LIGHT
 

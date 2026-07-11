@@ -320,6 +320,7 @@ class LoginDialog(QDialog):
         self.theme_combo.addItem("⚡ Cyber", ThemeName.CYBER)
         self.theme_combo.addItem("🌙 Dark", ThemeName.DARK)
         self.theme_combo.addItem("☀️ Light", ThemeName.LIGHT)
+        self.theme_combo.addItem("❄️ Nord", ThemeName.NORD)
 
         # Set popup colors from current theme
         self.theme_combo.set_theme_colors(self.theme_manager.theme)
