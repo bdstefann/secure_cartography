@@ -12,6 +12,15 @@
     <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
     <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
 
+    <!-- fCoSE layout extension (fast compound spring embedder) -->
+    <script src="https://unpkg.com/layout-base@2.0.1/layout-base.js"></script>
+    <script src="https://unpkg.com/cose-base@2.2.0/cose-base.js"></script>
+    <script src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
+
+    <!-- Cola layout extension (constraint-based) -->
+    <script src="https://unpkg.com/webcola@3.4.0/WebCola/cola.min.js"></script>
+    <script src="https://unpkg.com/cytoscape-cola@2.5.1/cytoscape-cola.js"></script>
+
     <!-- QWebChannel for Python bridge -->
     <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 
@@ -212,6 +221,8 @@ const TopologyViewer = {
     platformMap: null,
     loadCount: 0,
     dagreAvailable: false,
+    fcoseAvailable: false,
+    colaAvailable: false,
 
     init() {
         DebugLog.init();
@@ -224,6 +235,20 @@ const TopologyViewer = {
             DebugLog.info('Dagre layout extension registered');
         } else {
             DebugLog.warn('Dagre extension not available - hierarchical layout will fallback');
+        }
+
+        // Register fCoSE extension if available
+        if (typeof cytoscapeFcose !== 'undefined') {
+            cytoscape.use(cytoscapeFcose);
+            this.fcoseAvailable = true;
+            DebugLog.info('fCoSE layout extension registered');
+        }
+
+        // Register Cola extension if available
+        if (typeof cytoscapeCola !== 'undefined') {
+            cytoscape.use(cytoscapeCola);
+            this.colaAvailable = true;
+            DebugLog.info('Cola layout extension registered');
         }
 
         // Setup QWebChannel bridge
@@ -330,6 +355,7 @@ const TopologyViewer = {
                     'label': 'data(label)',
                     'font-size': '8px',
                     'color': textColor,
+                    'text-wrap': 'wrap',
                     'text-background-color': bgColor,
                     'text-background-opacity': 0.9,
                     'text-background-padding': '2px',
@@ -641,13 +667,22 @@ const TopologyViewer = {
 
                     let label = '';
                     const connections = peerData.connections || [];
-                    if (connections.length > 0 && connections[0].length >= 2) {
-                        label = `${connections[0][0]} ↔ ${connections[0][1]}`;
+                    if (connections.length > 0) {
+                        const labels = connections
+                            .filter(c => c.length >= 2)
+                            .map(c => `${c[0]} ↔ ${c[1]}`);
+                        label = labels.join('\n');
                     }
 
                     elements.push({
                         group: 'edges',
-                        data: { id: edgeId, source: deviceName, target: peerName, label: label }
+                        data: {
+                            id: edgeId,
+                            source: deviceName,
+                            target: peerName,
+                            label: label,
+                            connectionCount: connections.length
+                        }
                     });
                 }
             }
@@ -826,6 +861,73 @@ const TopologyViewer = {
                 }
                 break;
 
+            case 'dagre-lr':
+                if (this.dagreAvailable) {
+                    layoutConfig = {
+                        name: 'dagre',
+                        rankDir: 'LR',           // Left to Right
+                        nodeSep: 50,
+                        rankSep: 100,
+                        edgeSep: 10,
+                        ranker: 'network-simplex',
+                        animate: true,
+                        animationDuration: 500,
+                        fit: true,
+                        padding: 30
+                    };
+                } else {
+                    DebugLog.warn('Dagre not available, falling back to breadthfirst');
+                    return this.applyLayout('breadthfirst');
+                }
+                break;
+
+            case 'fcose':
+                if (this.fcoseAvailable) {
+                    layoutConfig = {
+                        name: 'fcose',
+                        animate: true,
+                        animationDuration: 500,
+                        quality: 'default',
+                        randomize: true,
+                        nodeDimensionsIncludeLabels: true,
+                        uniformNodeDimensions: false,
+                        packComponents: true,
+                        nodeRepulsion: 6500,
+                        idealEdgeLength: 80,
+                        edgeElasticity: 0.45,
+                        nestingFactor: 0.1,
+                        gravity: 0.25,
+                        gravityRange: 3.8,
+                        fit: true,
+                        padding: 30
+                    };
+                } else {
+                    DebugLog.warn('fCoSE not available, falling back to cose');
+                    return this.applyLayout('cose');
+                }
+                break;
+
+            case 'cola':
+                if (this.colaAvailable) {
+                    layoutConfig = {
+                        name: 'cola',
+                        animate: true,
+                        animationDuration: 500,
+                        maxSimulationTime: 4000,
+                        ungrabifyWhileSimulating: false,
+                        fit: true,
+                        padding: 30,
+                        nodeDimensionsIncludeLabels: true,
+                        avoidOverlap: true,
+                        convergenceThreshold: 0.01,
+                        edgeLength: 120,
+                    };
+                } else {
+                    DebugLog.warn('Cola not available, falling back to cose');
+                    return this.applyLayout('cose');
+                }
+                break;
+
             case 'cose':
                 layoutConfig = {
                     name: 'cose',
@@ -919,10 +1021,13 @@ const TopologyViewer = {
     showEdgeInfo(data) {
         const panel = document.getElementById('info-panel');
         const content = document.getElementById('info-content');
+        const interfaces = (data.label || 'N/A').replace(/\n/g, '<br>');
+        const count = data.connectionCount || '';
+        const countStr = count > 1 ? ` (${count} links)` : '';
         content.innerHTML = `
             <div class="info-item"><strong>Source:</strong> ${data.source}</div>
             <div class="info-item"><strong>Target:</strong> ${data.target}</div>
-            <div class="info-item"><strong>Interfaces:</strong> ${data.label || 'N/A'}</div>
+            <div class="info-item"><strong>Interfaces${countStr}:</strong><br>${interfaces}</div>
         `;
         panel.querySelector('h4').textContent = 'Connection Information';
         panel.classList.add('active');

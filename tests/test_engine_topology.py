@@ -95,34 +95,34 @@ def _lldp(models, *, local_if, peer, remote_if, peer_ip=None):
 
 def test_bidirectional_link_is_kept(engine, models_mod):
     a = _make_device(
-        models_mod, hostname="A", ip="10.0.0.1",
-        neighbors=[_lldp(models_mod, local_if="Gi0/1", peer="B", remote_if="Gi0/2")],
+        models_mod, hostname="R1", ip="10.0.0.1",
+        neighbors=[_lldp(models_mod, local_if="Gi0/1", peer="R2", remote_if="Gi0/2")],
     )
     b = _make_device(
-        models_mod, hostname="B", ip="10.0.0.2",
-        neighbors=[_lldp(models_mod, local_if="Gi0/2", peer="A", remote_if="Gi0/1")],
+        models_mod, hostname="R2", ip="10.0.0.2",
+        neighbors=[_lldp(models_mod, local_if="Gi0/2", peer="R1", remote_if="Gi0/1")],
     )
     topo = engine._generate_topology_map([a, b])
 
-    assert "B" in topo["A"]["peers"]
-    assert ["Gi0/1", "Gi0/2"] in topo["A"]["peers"]["B"]["connections"]
-    assert "A" in topo["B"]["peers"]
-    assert ["Gi0/2", "Gi0/1"] in topo["B"]["peers"]["A"]["connections"]
+    assert "R2" in topo["R1"]["peers"]
+    assert ["Gi0/1", "Gi0/2"] in topo["R1"]["peers"]["R2"]["connections"]
+    assert "R1" in topo["R2"]["peers"]
+    assert ["Gi0/2", "Gi0/1"] in topo["R2"]["peers"]["R1"]["connections"]
 
 
 def test_unidirectional_link_is_dropped_when_peer_was_discovered(engine, models_mod):
-    # A claims a link to B on Gi0/1 <-> Gi0/2.
-    # B was discovered (has neighbors) but does NOT claim A back -> drop it.
+    # R1 claims a link to R2 on Gi0/1 <-> Gi0/2.
+    # R2 was discovered (has neighbors) but does NOT claim R1 back -> drop it.
     a = _make_device(
-        models_mod, hostname="A", ip="10.0.0.1",
-        neighbors=[_lldp(models_mod, local_if="Gi0/1", peer="B", remote_if="Gi0/2")],
+        models_mod, hostname="R1", ip="10.0.0.1",
+        neighbors=[_lldp(models_mod, local_if="Gi0/1", peer="R2", remote_if="Gi0/2")],
     )
     b = _make_device(
-        models_mod, hostname="B", ip="10.0.0.2",
-        neighbors=[_lldp(models_mod, local_if="Gi0/9", peer="C", remote_if="Gi0/9")],
+        models_mod, hostname="R2", ip="10.0.0.2",
+        neighbors=[_lldp(models_mod, local_if="Gi0/9", peer="R3", remote_if="Gi0/9")],
     )
     topo = engine._generate_topology_map([a, b])
-    assert "B" not in topo["A"]["peers"], (
+    assert "R2" not in topo["R1"]["peers"], (
         "A's claim of B should have been dropped — B was discovered with neighbors "
         "but never claimed A back. If this fails, has_reverse_claim is being "
         "short-circuited (the bug fixed in 686f3ba)."
@@ -130,42 +130,42 @@ def test_unidirectional_link_is_dropped_when_peer_was_discovered(engine, models_
 
 
 def test_leaf_peer_keeps_unidirectional_link(engine, models_mod):
-    # B was discovered but has NO neighbors (capability-less leaf).
-    # A's claim to B is trusted because the leaf can't reciprocate.
+    # R2 was discovered but has NO neighbors (capability-less leaf).
+    # R1's claim to R2 is trusted because the leaf can't reciprocate.
     a = _make_device(
-        models_mod, hostname="A", ip="10.0.0.1",
-        neighbors=[_lldp(models_mod, local_if="Gi0/1", peer="B", remote_if="Gi0/2")],
+        models_mod, hostname="R1", ip="10.0.0.1",
+        neighbors=[_lldp(models_mod, local_if="Gi0/1", peer="R2", remote_if="Gi0/2")],
     )
-    b = _make_device(models_mod, hostname="B", ip="10.0.0.2", neighbors=[])
+    b = _make_device(models_mod, hostname="R2", ip="10.0.0.2", neighbors=[])
     topo = engine._generate_topology_map([a, b])
-    assert "B" in topo["A"]["peers"]
-    assert ["Gi0/1", "Gi0/2"] in topo["A"]["peers"]["B"]["connections"]
+    assert "R2" in topo["R1"]["peers"]
+    assert ["Gi0/1", "Gi0/2"] in topo["R1"]["peers"]["R2"]["connections"]
 
 
 def test_undiscovered_peer_keeps_link(engine, models_mod):
     # B was never discovered (no Device for it). Trust A's claim.
     a = _make_device(
-        models_mod, hostname="A", ip="10.0.0.1",
+        models_mod, hostname="R1", ip="10.0.0.1",
         neighbors=[_lldp(models_mod, local_if="Gi0/1", peer="ghost", remote_if="Gi0/2")],
     )
     topo = engine._generate_topology_map([a])
-    assert "ghost" in topo["A"]["peers"]
+    assert "ghost" in topo["R1"]["peers"]
 
 
 def test_normalized_interface_matching_lets_bidirectional_link_pass(engine, models_mod):
     # A reports "GigabitEthernet0/1" and B reports "Gi0/1" — after normalization
     # both sides should agree and the link should be kept.
     a = _make_device(
-        models_mod, hostname="A", ip="10.0.0.1",
-        neighbors=[_lldp(models_mod, local_if="GigabitEthernet0/1", peer="B",
+        models_mod, hostname="R1", ip="10.0.0.1",
+        neighbors=[_lldp(models_mod, local_if="GigabitEthernet0/1", peer="R2",
                          remote_if="Gi0/2")],
     )
     b = _make_device(
-        models_mod, hostname="B", ip="10.0.0.2",
-        neighbors=[_lldp(models_mod, local_if="Gi0/2", peer="A",
+        models_mod, hostname="R2", ip="10.0.0.2",
+        neighbors=[_lldp(models_mod, local_if="Gi0/2", peer="R1",
                          remote_if="GigabitEthernet0/1")],
     )
     topo = engine._generate_topology_map([a, b])
-    assert "B" in topo["A"]["peers"]
+    assert "R2" in topo["R1"]["peers"]
     # Stored using normalized short form
-    assert ["Gi0/1", "Gi0/2"] in topo["A"]["peers"]["B"]["connections"]
+    assert ["Gi0/1", "Gi0/2"] in topo["R1"]["peers"]["R2"]["connections"]

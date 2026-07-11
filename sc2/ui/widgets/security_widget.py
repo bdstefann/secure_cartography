@@ -102,6 +102,32 @@ class PlatformParser:
         (r"vEOS[^\s]*\s+EOS\s+(\d+\.\d+\.\d+[A-Z]*)",
          "Arista", "EOS", "arista", "eos", 1),
 
+        # ── Cisco NX-OS — tfsm_fire parsed format (check BEFORE generic IOS) ──
+        # "Cisco Nexus9000 C9504 9.3(11)"
+        # "Cisco Nexus7000 C7004 8.4(6a)"
+        # "Cisco Nexus5548 Chassis 7.3(8)N1(1)"
+        # "Cisco Nexus9000 C93180YC-EX 9.3(11)"
+        (r"Cisco\s+Nexus\d+.*?(\d+\.\d+\([0-9A-Za-z\.]+\)[A-Za-z0-9\(\)]*)",
+         "Cisco", "NX-OS", "cisco", "nx-os", 1),
+
+        # NX-OS — SNMP sysDescr / show version long format
+        (r"Cisco\s+NX-?OS.*Version\s+(\d+\.\d+\([0-9A-Za-z\.]+\)[A-Za-z0-9\(\)]*)",
+         "Cisco", "NX-OS", "cisco", "nx-os", 1),
+
+        # ── Cisco IOS-XE — tfsm_fire short format (before generic IOS) ──
+        # "Cisco IOS-XE 16.12.08"
+        # "Cisco IOS-XE 03.11.07.E"
+        (r"Cisco\s+IOS[- ]?XE\s+(\d+[\.\d]+[A-Za-z0-9\.]*)",
+         "Cisco", "IOS-XE", "cisco", "ios_xe", 1),
+
+        # IOS-XE — SNMP sysDescr long format
+        (r"Cisco\s+IOS[- ]?XE\s+[Ss]oftware[,\s]+Version\s+(\d+\.\d+\.\d+[A-Za-z0-9\.]*)",
+         "Cisco", "IOS-XE", "cisco", "ios_xe", 1),
+
+        # Cisco IOS-XR
+        (r"Cisco\s+IOS[- ]?XR\s+[Ss]oftware[,\s]+Version\s+(\d+\.\d+\.\d+[A-Za-z0-9\.]*)",
+         "Cisco", "IOS-XR", "cisco", "ios_xr", 1),
+
         # Cisco IOS - flexible patterns for various formats
         # Handles: "Cisco IOS IOS 15.2(4.0.55)E", "Cisco 7200 IOS 15.2(4)M11", "Cisco IOSv IOS 15.6(2)T"
         (r"Cisco\s+(?:IOS[v]?\s+)?(?:IOS\s+)?(\d+\.\d+\([0-9\.]+\)[A-Za-z0-9]*)",
@@ -111,13 +137,10 @@ class PlatformParser:
         (r"Cisco\s+IOSv\s+IOS\s+(\d+\.\d+\([0-9\.]+\)[A-Za-z0-9]*)",
          "Cisco", "IOS", "cisco", "ios", 1),
 
-        # Cisco IOS-XE / IOS-XR / NX-OS
-        (r"Cisco\s+IOS[- ]?XE\s+[Ss]oftware[,\s]+Version\s+(\d+\.\d+\.\d+[A-Za-z0-9\.]*)",
-         "Cisco", "IOS-XE", "cisco", "ios_xe", 1),
-        (r"Cisco\s+IOS[- ]?XR\s+[Ss]oftware[,\s]+Version\s+(\d+\.\d+\.\d+[A-Za-z0-9\.]*)",
-         "Cisco", "IOS-XR", "cisco", "ios_xr", 1),
-        (r"Cisco\s+NX-?OS.*Version\s+(\d+\.\d+\([0-9]+\)[A-Za-z0-9\.]*)",
-         "Cisco", "NX-OS", "cisco", "nx-os", 1),
+        # ── Cisco IOS — tfsm_fire short format: "Cisco 15.2(4)E10" ──
+        (r"Cisco\s+(\d+\.\d+\([0-9\.]+\)[A-Za-z0-9]*)\s*$",
+         "Cisco", "IOS", "cisco", "ios", 1),
+
         (r"Cisco\s+IOS\s+(?:Software,?\s+)?(?:Version\s+)?(\d+\.\d+\([0-9]+\)[A-Za-z0-9]*)",
          "Cisco", "IOS", "cisco", "ios", 1),
 

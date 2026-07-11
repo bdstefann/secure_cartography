@@ -294,13 +294,17 @@ class TopologyPreviewPanel(Panel, metaclass=SingletonMeta):
     def _update_stats(self):
         """Update the stats display."""
         nodes = len(self._topology_data)
-        edges = set()
+        total_connections = 0
+        seen_edges = set()
         for device, data in self._topology_data.items():
-            for peer in data.get('peers', {}).keys():
+            for peer, peer_data in data.get('peers', {}).items():
                 edge_id = tuple(sorted([device, peer]))
-                edges.add(edge_id)
+                if edge_id not in seen_edges:
+                    seen_edges.add(edge_id)
+                    conns = peer_data.get('connections', []) if isinstance(peer_data, dict) else []
+                    total_connections += max(len(conns), 1)
 
-        self._stats_label.setText(f"Devices: {nodes} | Connections: {len(edges)}")
+        self._stats_label.setText(f"Devices: {nodes} | Connections: {total_connections}")
 
     # =========================================================================
     # Public API

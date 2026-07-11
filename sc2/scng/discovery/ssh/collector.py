@@ -16,7 +16,8 @@ from typing import Optional, List, Dict, Any, Tuple
 from ..models import (
     Neighbor, NeighborProtocol, DeviceVendor,
 )
-from .client import SSHClient, SSHClientConfig
+from .client import SSHClient, SSHClientConfig, lookup_emulation
+from . import client as _ssh_client
 from .parsers import TextFSMParser, ParseResult
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ class VendorCommands:
     ndp_command: Optional[str] = None
     ndp_template: Optional[str] = None
     system_command: Optional[str] = None
+    version_template: Optional[str] = None
     interfaces_command: Optional[str] = None
 
 
@@ -46,18 +48,21 @@ VENDOR_COMMANDS: Dict[DeviceVendor, VendorCommands] = {
         lldp_command="show lldp neighbors detail",
         lldp_template="lldp",
         system_command="show version",
+        version_template="show_version",
         interfaces_command="show interfaces description",
     ),
     DeviceVendor.ARISTA: VendorCommands(
         lldp_command="show lldp neighbors detail",
         lldp_template="lldp",
         system_command="show version",
+        version_template="arista_eos_show_version",
         interfaces_command="show interfaces description",
     ),
     DeviceVendor.JUNIPER: VendorCommands(
         lldp_command="show lldp neighbors detail",
         lldp_template="juniper_junos_show_lldp_neighbors_detail",
         system_command="show version",
+        version_template="juniper_junos_show_version",
         interfaces_command="show interfaces descriptions",
     ),
     DeviceVendor.LINUX: VendorCommands(
@@ -119,6 +124,9 @@ class SSHCollectorResult:
     neighbors: List[Neighbor]
     vendor: DeviceVendor
     hostname: Optional[str] = None  # Extracted from prompt
+    platform: Optional[str] = None  # Parsed from show version (e.g., "N9K-C9396PX")
+    version: Optional[str] = None   # Parsed from show version (e.g., "9.3(11)")
+    serial: Optional[str] = None    # Parsed from show version
     raw_output: Dict[str, str] = field(default_factory=dict)  # command -> output
     errors: List[str] = field(default_factory=list)
     duration_ms: float = 0.0
@@ -218,6 +226,7 @@ class SSHCollector:
         errors: List[str] = []
         vendor = vendor_hint or DeviceVendor.UNKNOWN
         hostname: Optional[str] = None
+        version_info: Dict[str, str] = {}
 
         config = SSHClientConfig(
             host=host,
@@ -268,6 +277,15 @@ class SSHCollector:
                     print(f"[DEBUG] Using templates: CDP={commands.cdp_template}, LLDP={commands.lldp_template}")
                 logger.debug(f"Using commands: CDP={commands.cdp_command}, LLDP={commands.lldp_command}")
 
+                # Parse show version through TextFSM for structured fields
+                version_info = {}
+                if raw_output.get('show_version') and commands.version_template:
+                    if debug:
+                        print(f"[DEBUG] === PHASE: Parse show version ===")
+                    version_info = self._parse_version(
+                        raw_output['show_version'], commands, vendor, debug=debug
+                    )
+
                 # Collect CDP (Cisco only)
                 if collect_cdp and commands.cdp_command:
                     if debug:
@@ -316,6 +334,9 @@ class SSHCollector:
             neighbors=neighbors,
             vendor=vendor,
             hostname=hostname,
+            platform=version_info.get('platform'),
+            version=version_info.get('version'),
+            serial=version_info.get('serial'),
             raw_output=raw_output,
             errors=errors,
             duration_ms=duration_ms,
@@ -374,6 +395,118 @@ class SSHCollector:
             print(f"[DEBUG VENDOR] Could not detect vendor, returning UNKNOWN")
         return DeviceVendor.UNKNOWN
 
+    def _parse_version(
+        self,
+        version_output: str,
+        commands: VendorCommands,
+        vendor: DeviceVendor,
+        debug: bool = False,
+    ) -> Dict[str, str]:
+        """
+        Parse show version output through TextFSM for structured fields.
+
+        Returns dict with keys: platform, version, serial, hostname
+        (any may be absent if parsing fails or field not found).
+        """
+        result: Dict[str, str] = {}
+
+        if not commands.version_template:
+            return result
+
+        # Refine filter based on output content — Cisco IOS and NX-OS
+        # share DeviceVendor.CISCO but need different templates
+        filter_string = commands.version_template
+        output_lower = version_output.lower()
+        if filter_string == "show_version":
+            if 'nx-os' in output_lower or 'nexus' in output_lower:
+                filter_string = "cisco_nxos_show_version"
+            elif 'ios' in output_lower:
+                filter_string = "cisco_ios_show_version"
+
+        try:
+            parsed = self.parser.parse(version_output, filter_string, min_score=30)
+
+            if not parsed.success or not parsed.records:
+                if debug:
+                    print(f"[DEBUG VERSION] TextFSM parse failed: {parsed.error}")
+                return result
+
+            rec = parsed.records[0]
+            if debug:
+                print(f"[DEBUG VERSION] Parsed fields: {list(rec.keys())}")
+
+            # NX-OS: PLATFORM, OS, HOSTNAME, SERIAL
+            if rec.get('PLATFORM'):
+                result['platform'] = rec['PLATFORM']
+            # IOS: HARDWARE (list), VERSION, HOSTNAME, SERIAL (list)
+            elif rec.get('HARDWARE'):
+                hw = rec['HARDWARE']
+                if isinstance(hw, list) and hw:
+                    result['platform'] = hw[0]
+                elif isinstance(hw, str):
+                    result['platform'] = hw
+            # Arista: MODEL
+            elif rec.get('MODEL'):
+                result['platform'] = rec['MODEL']
+
+            # Version
+            if rec.get('VERSION'):
+                ver = rec['VERSION']
+                if isinstance(ver, str):
+                    result['version'] = ver.strip()
+            elif rec.get('OS'):
+                result['version'] = rec['OS']
+            elif rec.get('JUNOS_VERSION'):
+                result['version'] = rec['JUNOS_VERSION']
+
+            # Serial
+            if rec.get('SERIAL'):
+                ser = rec['SERIAL']
+                if isinstance(ser, list) and ser:
+                    result['serial'] = ser[0]
+                elif isinstance(ser, str):
+                    result['serial'] = ser
+            elif rec.get('SERIAL_NUMBER'):
+                result['serial'] = rec['SERIAL_NUMBER']
+
+            # Hostname from template (may be more reliable than prompt)
+            if rec.get('HOSTNAME'):
+                result['hostname'] = rec['HOSTNAME']
+
+            if debug:
+                print(f"[DEBUG VERSION] Extracted: {result}")
+
+        except Exception as e:
+            if debug:
+                print(f"[DEBUG VERSION] Parse exception: {e}")
+            logger.debug(f"Version parsing failed: {e}")
+
+        return result
+
+    def _is_command_error(self, output: str) -> bool:
+        """Check if command output indicates an error (not real data)."""
+        if not output:
+            return True
+        # Strip prompt lines and whitespace
+        lines = [l.strip() for l in output.strip().split('\n') if l.strip()]
+        if not lines:
+            return True
+        # Check for CLI error markers
+        error_markers = [
+            '% invalid command',
+            '% incomplete command',
+            '% ambiguous command',
+            '% unknown command',
+            '% unrecognized command',
+            'syntax error',
+            'command not found',
+        ]
+        output_lower = output.lower()
+        for marker in error_markers:
+            if marker in output_lower:
+                return True
+        return False
+
     def _collect_cdp(
         self,
         client: SSHClient,
@@ -383,6 +516,7 @@ class SSHCollector:
         debug: bool = False,
     ) -> List[Neighbor]:
         """Collect CDP neighbors."""
+        logger.info(f"[COLLECTOR] _collect_cdp called — emulation={'ON' if _ssh_client.EMULATION_ENABLED else 'OFF'}")
         neighbors = []
 
         try:
@@ -395,6 +529,13 @@ class SSHCollector:
                 print(f"[DEBUG CDP] First 500 chars:\n{output[:500]}")
             logger.debug(f"CDP command returned {len(output)} bytes")
             raw_output['cdp'] = output
+
+            # Check for command errors before parsing
+            if self._is_command_error(output):
+                if debug:
+                    print(f"[DEBUG CDP] Command returned error, skipping parse")
+                logger.debug("CDP command returned error output, skipping parse")
+                return neighbors
 
             if debug:
                 print(f"[DEBUG CDP] Parsing with template: {commands.cdp_template}")
@@ -412,15 +553,16 @@ class SSHCollector:
                     logger.debug(f"  Record {i+1}: {record}")
                     neighbor = self._cdp_record_to_neighbor(record)
                     if neighbor:
+                        self._enrich_neighbor_ip(neighbor)
                         neighbors.append(neighbor)
-                        logger.debug(f"  -> Neighbor: {neighbor.local_interface} -> {neighbor.remote_device}")
+                        logger.info(f"  [COLLECTOR] CDP neighbor: {neighbor.local_interface} -> {neighbor.remote_device}  ip={neighbor.remote_ip or 'NONE'}")
                     else:
                         logger.debug(f"  -> Skipped (missing required fields)")
-                logger.debug(f"Parsed {len(neighbors)} CDP neighbors")
+                logger.info(f"[COLLECTOR] Parsed {len(neighbors)} CDP neighbors")
             else:
                 if debug:
                     print(f"[DEBUG CDP] Parsing failed: {result.error}")
-                logger.debug(f"CDP parsing failed or no records: {result.error}")
+                logger.info(f"[COLLECTOR] CDP parsing failed or no records: score={result.score} error={result.error}")
 
         except Exception as e:
             if debug:
@@ -439,6 +581,7 @@ class SSHCollector:
         debug: bool = False,
     ) -> List[Neighbor]:
         """Collect LLDP neighbors."""
+        logger.info(f"[COLLECTOR] _collect_lldp called — emulation={'ON' if _ssh_client.EMULATION_ENABLED else 'OFF'}")
         neighbors = []
 
         try:
@@ -451,6 +594,13 @@ class SSHCollector:
                 print(f"[DEBUG LLDP] First 500 chars:\n{output[:500]}")
             logger.debug(f"LLDP command returned {len(output)} bytes")
             raw_output['lldp'] = output
+
+            # Check for command errors before parsing
+            if self._is_command_error(output):
+                if debug:
+                    print(f"[DEBUG LLDP] Command returned error, skipping parse")
+                logger.debug("LLDP command returned error output, skipping parse")
+                return neighbors
 
             if debug:
                 print(f"[DEBUG LLDP] Parsing with template: {commands.lldp_template}")
@@ -468,8 +618,9 @@ class SSHCollector:
                     logger.debug(f"  Record {i+1}: {record}")
                     neighbor = self._lldp_record_to_neighbor(record)
                     if neighbor:
+                        self._enrich_neighbor_ip(neighbor)
                         neighbors.append(neighbor)
-                        logger.debug(f"  -> Neighbor: {neighbor.local_interface} -> {neighbor.remote_device}")
+                        logger.debug(f"  -> Neighbor: {neighbor.local_interface} -> {neighbor.remote_device} ip={neighbor.remote_ip or 'none'}")
                     else:
                         logger.debug(f"  -> Skipped (missing required fields)")
                 logger.debug(f"Parsed {len(neighbors)} LLDP neighbors")
@@ -569,6 +720,60 @@ class SSHCollector:
             remote_description=record.get('VERSION') or record.get('SOFTWARE'),
         )
 
+    def _enrich_neighbor_ip(self, neighbor) -> None:
+        """
+        Ensure neighbor.remote_ip is reachable in the emulation table.
+
+        When emulation is active the crawler can only connect to IPs that
+        exist in ip_lookup.json.  A device may advertise a loopback or
+        OOB address as its LLDP management IP — that address will be a
+        MISS in the emulation table even though the hostname is known.
+
+        Strategy:
+          1. No-op when emulation is off.
+          2. If remote_ip is already set, verify it resolves in the
+             emulation table.  If it does, we're done.
+          3. Otherwise (IP absent OR IP is an emulation MISS) try a
+             hostname-based lookup and replace/set remote_ip with the
+             emulation-routable address.
+        """
+        if not _ssh_client.EMULATION_ENABLED:
+            return
+
+        # If we already have an IP, check whether it's in the emulation table.
+        if neighbor.remote_ip:
+            emu = lookup_emulation(neighbor.remote_ip)
+            if emu:
+                return  # IP is valid in emulation — nothing to do.
+            # IP is set but not resolvable (e.g. a loopback or OOB address).
+            # Fall through to hostname-based recovery below.
+            logger.debug(
+                f"[EMULATION] IP {neighbor.remote_ip} not in emulation table "
+                f"for {neighbor.remote_device} — attempting hostname fallback"
+            )
+
+        emu = lookup_emulation(neighbor.remote_device)
+        if not emu:
+            return
+
+        real_ip = next(
+            (ip for ip, entry in _ssh_client.EMULATION_LOOKUP.items()
+             if entry.get('hostname') == emu['hostname']),
+            None
+        )
+        if real_ip:
+            old_ip = neighbor.remote_ip
+            neighbor.remote_ip = real_ip
+            if old_ip:
+                logger.info(
+                    f"[EMULATION] IP replaced: {neighbor.remote_device} "
+                    f"{old_ip} -> {real_ip}"
+                )
+            else:
+                logger.info(
+                    f"[EMULATION] IP enriched: {neighbor.remote_device} -> {real_ip}"
+                )
+
     def _cdp_record_to_neighbor(self, record: Dict[str, Any]) -> Optional[Neighbor]:
         """Convert CDP TextFSM record to Neighbor object."""
         # NEIGHBOR_NAME for NTC templates, DESTINATION_HOST/DEVICE_ID for legacy
@@ -590,7 +795,7 @@ class SSHCollector:
         # MGMT_ADDRESS for NTC templates, MANAGEMENT_IP for legacy
         remote_ip = (
             record.get('MGMT_ADDRESS') or
-            record.get('MANAGEMENT_IP' )or
+            record.get('MANAGEMENT_IP') or
             record.get('REMOTE_IP')
         )
 
@@ -603,6 +808,7 @@ class SSHCollector:
             remote_interface=remote_interface or "",
             protocol=NeighborProtocol.CDP,
             remote_ip=remote_ip if remote_ip else None,
+            remote_platform=record.get('PLATFORM') or None,
         )
 
     def _lldp_record_to_neighbor(self, record: Dict[str, Any]) -> Optional[Neighbor]:
