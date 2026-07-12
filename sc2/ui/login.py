@@ -8,8 +8,8 @@ import traceback
 from pathlib import Path
 from typing import Optional, Callable
 
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
-from PyQt6.QtGui import QFont, QIcon, QPixmap, QColor
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QTimer
+from PyQt6.QtGui import QFont, QIcon, QPixmap, QColor, QPalette
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QFrame, QWidget, QMessageBox, QApplication,
@@ -19,6 +19,69 @@ from PyQt6.QtWidgets import (
 from .themes import ThemeColors, ThemeManager, ThemeName, fix_all_comboboxes, StyledComboBox
 from .settings import SettingsManager, get_settings
 from sc2.scng.creds.vault import VaultLockedOut
+
+
+# =============================================================================
+# Login-screen design tokens — from design_handoff_login_screen (high-fidelity).
+# These are login-card-specific colors, deliberately distinct from the global
+# app theme (e.g. Nord uses a light input on a dark card). Exact hex per handoff.
+# shadow = (blurRadius, xOffset, yOffset, QColor)
+# =============================================================================
+LOGIN_THEMES = {
+    ThemeName.LIGHT: {
+        "outerBg": "#121319", "cardBg": "#fbfbfc", "cardBorder": "#e4e7ec",
+        "shadow": (70, 0, 24, QColor(0, 0, 0, 115)),
+        "topBar": "#2451e0",
+        "titleColor": "#111827", "labelColor": "#6b7686",
+        "inputBg": "#eef0f3", "inputBorder": "#e0e3e8", "inputText": "#1f2937",
+        "placeholderColor": "#9aa3b0", "iconColor": "#2451e0", "eyeColor": "#7a4a3f",
+        "buttonA": "#1c3fe0", "buttonB": "#2b52e6", "buttonText": "#ffffff",
+        "resetBorder": "#e2483f", "resetText": "#e2483f", "versionColor": "#a2a9b5",
+        "pillBg": "#f2f3f5", "pillBorder": "#e0e3e8", "pillText": "#374151",
+        "menuBg": "#ffffff", "menuBorder": "#e0e3e8", "menuHover": "#f2f3f5",
+    },
+    ThemeName.DARK: {
+        "outerBg": "#000000", "cardBg": "#0e0d0c", "cardBorder": "#2a2216",
+        "shadow": (70, 0, 24, QColor(0, 0, 0, 180)),
+        "topBar": "#d9b23c",
+        "titleColor": "#f5f1e6", "labelColor": "#a89f8d",
+        "inputBg": "#1a140a", "inputBorder": "#332a18", "inputText": "#e8e2d4",
+        "placeholderColor": "#6b6152", "iconColor": "#d9b23c", "eyeColor": "#c96b5c",
+        "buttonA": "#c9a227", "buttonB": "#e2c04a", "buttonText": "#1a1408",
+        "resetBorder": "#b33a34", "resetText": "#e0524a", "versionColor": "#5c574c",
+        "pillBg": "#141210", "pillBorder": "#332a18", "pillText": "#e8e2d4",
+        "menuBg": "#161310", "menuBorder": "#332a18", "menuHover": "#221c11",
+    },
+    ThemeName.CYBER: {
+        "outerBg": "#000000", "cardBg": "#080b10", "cardBorder": "#123039",
+        "shadow": (60, 0, 20, QColor(37, 224, 232, 90)),
+        "topBar": "#25e0e8",
+        "titleColor": "#eaf6f8", "labelColor": "#7fb8c2",
+        "inputBg": "#0c1c20", "inputBorder": "#16414a", "inputText": "#d9f7fa",
+        "placeholderColor": "#4d7580", "iconColor": "#25e0e8", "eyeColor": "#ef3f6c",
+        "buttonA": "#18d3d8", "buttonB": "#37f0e8", "buttonText": "#052226",
+        "resetBorder": "#d81e4f", "resetText": "#ef3f6c", "versionColor": "#3f6870",
+        "pillBg": "#0c1a1e", "pillBorder": "#16414a", "pillText": "#bdeef2",
+        "menuBg": "#0a1519", "menuBorder": "#16414a", "menuHover": "#102830",
+    },
+    ThemeName.NORD: {
+        "outerBg": "#20242e", "cardBg": "#3b4252", "cardBorder": "#4c566a",
+        "shadow": (70, 0, 24, QColor(0, 0, 0, 128)),
+        "topBar": "#88c0d0",
+        "titleColor": "#eceff4", "labelColor": "#c2cbdb",
+        "inputBg": "#e5e9f0", "inputBorder": "#d8dee9", "inputText": "#2e3440",
+        "placeholderColor": "#8a94a8", "iconColor": "#5e81ac", "eyeColor": "#bf616a",
+        "buttonA": "#7fa8bd", "buttonB": "#8fb9cc", "buttonText": "#1f2733",
+        "resetBorder": "#bf616a", "resetText": "#e88e93", "versionColor": "#8a94a8",
+        "pillBg": "#434c5e", "pillBorder": "#4c566a", "pillText": "#eceff4",
+        "menuBg": "#3b4252", "menuBorder": "#4c566a", "menuHover": "#434c5e",
+    },
+}
+
+
+def login_tokens(theme_name: ThemeName) -> dict:
+    """Login-card design tokens for a theme (falls back to Light)."""
+    return LOGIN_THEMES.get(theme_name, LOGIN_THEMES[ThemeName.LIGHT])
 
 
 class IconLabel(QLabel):
@@ -187,10 +250,10 @@ class PasswordInput(QWidget):
         self._visible = not self._visible
         if self._visible:
             self.input.setEchoMode(QLineEdit.EchoMode.Normal)
-            self.toggle_btn.setText("🔒")
+            self.toggle_btn.setText("🙈")
         else:
             self.input.setEchoMode(QLineEdit.EchoMode.Password)
-            self.toggle_btn.setText("👁")
+            self.toggle_btn.setText("👁️")
 
     def text(self) -> str:
         return self.input.text()
@@ -204,30 +267,19 @@ class PasswordInput(QWidget):
     def setFocus(self):
         self.input.setFocus()
 
-    def apply_theme(self, theme: ThemeColors):
-        """Apply theme colors to the input."""
-        # Compute theme-appropriate colors
-        if theme.name == "Cyber":
-            bg_input = "#0a1a1a"
-            border_dim = "#1a3a3a"
-        elif theme.name == "Dark":
-            bg_input = "#1a1508"
-            border_dim = "#2a2510"
-        else:  # Light
-            bg_input = "#f5f5f5"
-            border_dim = "#d0d0d0"
-
+    def apply_theme(self, tokens: dict):
+        """Apply login-card design tokens to the input pill."""
         self.container.setStyleSheet(f"""
             QFrame#passwordContainer {{
-                background-color: {bg_input};
-                border: 1px solid {border_dim};
-                border-radius: 8px;
+                background-color: {tokens['inputBg']};
+                border: 1px solid {tokens['inputBorder']};
+                border-radius: 10px;
             }}
         """)
         self.icon_label.setStyleSheet(f"""
-            background: transparent; 
+            background: transparent;
             border: none;
-            color: {theme.text_muted};
+            color: {tokens['iconColor']};
         """)
         self.input.setStyleSheet(f"""
             QLineEdit {{
@@ -235,18 +287,22 @@ class PasswordInput(QWidget):
                 border: none;
                 padding: 10px 0;
                 font-size: 14px;
-                color: {theme.text_primary};
+                color: {tokens['inputText']};
             }}
         """)
+        # Placeholder color is a palette role, not a QSS property.
+        pal = self.input.palette()
+        pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(tokens['placeholderColor']))
+        self.input.setPalette(pal)
         self.toggle_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;
                 border: none;
                 font-size: 14px;
-                color: {theme.text_muted};
+                color: {tokens['eyeColor']};
             }}
             QPushButton:hover {{
-                color: {theme.accent};
+                color: {tokens['eyeColor']};
             }}
         """)
 
@@ -348,11 +404,27 @@ class LoginDialog(QDialog):
         banner_layout.setContentsMargins(0, 0, 0, 0)
         banner_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.banner = ThemeBanner(
-            theme_name=self.theme_manager.theme_name,
-            max_width=320,
-            max_height=100
+        # Logo slot (188×108, white rounded card) holding the TUIASI crest logo.
+        # Design tokens say the banner bg is transparent and the logo itself
+        # carries the white card — we render a white rounded QLabel for all
+        # themes so it matches the handoff on both light and dark cards.
+        self.banner = QLabel()
+        self.banner.setObjectName("logoBanner")
+        self.banner.setFixedSize(188, 108)
+        self.banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.banner.setStyleSheet(
+            "QLabel#logoBanner { background: #ffffff; border-radius: 10px; }"
         )
+        logo_path = Path(__file__).parent / "assets" / "tuiasi_logo.png"
+        if logo_path.exists():
+            pm = QPixmap(str(logo_path))
+            if not pm.isNull():
+                pm = pm.scaled(
+                    170, 94,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self.banner.setPixmap(pm)
         banner_layout.addWidget(self.banner)
 
         card_layout.addWidget(banner_container)
@@ -360,26 +432,26 @@ class LoginDialog(QDialog):
         # Spacer
         card_layout.addSpacing(16)
 
-        # Title
-        self.title_label = QLabel("SECURE CARTOGRAPHY")
+        # Title (per handoff: 19px, weight 800, letter-spacing 0.4px)
+        self.title_label = QLabel("MAPARE REȚEA & CONFIG PUSH")
         self.title_label.setObjectName("heading")
+        self.title_label.setTextFormat(Qt.TextFormat.PlainText)
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.title_label.setFixedHeight(28)
+        self.title_label.setWordWrap(True)
+        self.title_label.setFixedHeight(52)
         font = self.title_label.font()
-        font.setPointSize(18)
-        font.setBold(True)
-        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2)
+        font.setPixelSize(19)
+        font.setWeight(QFont.Weight.ExtraBold)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.4)
         self.title_label.setFont(font)
         card_layout.addWidget(self.title_label)
 
-        # Spacer
-        card_layout.addSpacing(8)
-
-        # Subtitle
-        self.subtitle_label = QLabel("SSH-Based Network Discovery & Mapping")
+        # Subtitle removed in the redesign — keep a hidden widget so any
+        # references remain valid, but it occupies no space.
+        self.subtitle_label = QLabel("")
         self.subtitle_label.setObjectName("subheading")
-        self.subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.subtitle_label.setFixedHeight(20)
+        self.subtitle_label.setFixedHeight(0)
+        self.subtitle_label.hide()
         card_layout.addWidget(self.subtitle_label)
 
         # Spacer before form
@@ -471,216 +543,219 @@ class LoginDialog(QDialog):
             self.reset_btn.hide()
 
     def _apply_theme(self):
-        """Apply current theme to dialog."""
+        """Apply the login-card design tokens for the current theme."""
         theme = self.theme_manager.theme
-
-        # Compute theme-appropriate colors
-        # These approximate the rgba values from the mockup for each theme
-        if theme.name == "Cyber":
-            bg_input = "#0a1a1a"
-            bg_hover = "#0f2626"
-            border_dim = "#1a3a3a"
-            border_secondary = "#2a5a5a"
-            shadow_color = QColor(0, 255, 255, 50)
-        elif theme.name == "Dark":
-            bg_input = "#1a1508"
-            bg_hover = "#1f1a0a"
-            border_dim = "#2a2510"
-            border_secondary = "#4a4020"
-            shadow_color = QColor(0, 0, 0, 100)
-        else:  # Light
-            bg_input = "#f5f5f5"
-            bg_hover = "#eeeeee"
-            border_dim = "#d0d0d0"
-            border_secondary = "#b0b8d0"
-            shadow_color = QColor(0, 0, 0, 30)
+        t = login_tokens(self.theme_manager.theme_name)
 
         # Dialog background is transparent (for the rounded card effect)
         self.setStyleSheet("background-color: transparent;")
 
-        # Card styling - this is the main visible background
+        # Card — cardBg + 1px cardBorder + 22px radius
         self.card.setStyleSheet(f"""
             QFrame#loginCard {{
-                background-color: {theme.bg_secondary};
-                border: 1px solid {border_secondary};
-                border-radius: 16px;
+                background-color: {t['cardBg']};
+                border: 1px solid {t['cardBorder']};
+                border-radius: 22px;
             }}
         """)
 
-        # Explicitly set all intermediate container backgrounds to transparent
-        # These are layout containers that shouldn't have visible backgrounds
+        # Intermediate layout containers stay transparent
         transparent_style = "background-color: transparent; border: none;"
         self.form_container.setStyleSheet(transparent_style)
         self.button_container.setStyleSheet(transparent_style)
 
-        # Add shadow effect
+        # Drop shadow (per-theme; Cyber uses an accent glow)
+        blur, xoff, yoff, shadow_color = t['shadow']
         shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(40)
-        shadow.setXOffset(0)
-        shadow.setYOffset(10)
+        shadow.setBlurRadius(blur)
+        shadow.setXOffset(xoff)
+        shadow.setYOffset(yoff)
         shadow.setColor(shadow_color)
         self.card.setGraphicsEffect(shadow)
 
-        # Accent line gradient
+        # Top accent bar — transparent → accent → transparent
         self.accent_line.setStyleSheet(f"""
             QFrame#accentLine {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:1, y2:0,
                     stop:0 transparent,
-                    stop:0.5 {theme.accent},
+                    stop:0.5 {t['topBar']},
                     stop:1 transparent
                 );
                 border: none;
-                border-radius: 1px;
             }}
         """)
         try:
-            fix_all_comboboxes(self,self.theme_manager.theme)
-        except Exception as e:
+            fix_all_comboboxes(self, self.theme_manager.theme)
+        except Exception:
             traceback.print_exc()
 
-        # Update banner for current theme
-        self.banner.set_theme(self.theme_manager.theme_name)
+        # Logo banner is theme-independent (white card) — nothing to re-theme.
 
-        # Labels
+        # Title — titleColor
         self.title_label.setStyleSheet(f"""
             QLabel#heading {{
-                color: {theme.text_primary};
+                color: {t['titleColor']};
                 background: transparent;
                 border: none;
             }}
         """)
 
-        self.subtitle_label.setStyleSheet(f"""
-            QLabel#subheading {{
-                color: {theme.text_secondary};
-                background: transparent;
-                border: none;
-            }}
-        """)
-
+        # MASTER PASSWORD label — labelColor, 11px/700/0.6px
         self.password_label.setStyleSheet(f"""
             QLabel#sectionTitle {{
-                color: {theme.text_secondary};
+                color: {t['labelColor']};
                 font-size: 11px;
-                font-weight: 600;
+                font-weight: 700;
                 letter-spacing: 1px;
                 background: transparent;
                 border: none;
             }}
         """)
 
+        # Error status — reset/error tone
         self.status_label.setStyleSheet(f"""
             QLabel#statusError {{
-                color: {theme.accent_danger};
+                color: {t['resetText']};
                 background: transparent;
                 border: none;
                 padding: 8px;
             }}
         """)
 
+        # Version — versionColor
         self.version_label.setStyleSheet(f"""
             QLabel#muted {{
-                color: {theme.text_muted};
+                color: {t['versionColor']};
                 background: transparent;
                 border: none;
             }}
         """)
 
-        # Password input
-        self.password_input.apply_theme(theme)
+        # Password input pill (login tokens)
+        self.password_input.apply_theme(t)
 
-        # Theme combo box
+        # Theme switcher pill + dropdown menu (pill/menu tokens)
         self.theme_combo.setStyleSheet(f"""
             QComboBox {{
-                background-color: {theme.bg_tertiary};
-                border: 1px solid {border_dim};
-                border-radius: 6px;
-                padding: 6px 12px;
-                color: {theme.text_primary};
+                background-color: {t['pillBg']};
+                border: 1px solid {t['pillBorder']};
+                border-radius: 9px;
+                padding: 7px 12px;
+                color: {t['pillText']};
                 font-size: 12px;
+                font-weight: 600;
             }}
             QComboBox:hover {{
-                border-color: {theme.accent};
+                border-color: {t['topBar']};
             }}
             QComboBox::drop-down {{
                 border: none;
-                width: 20px;
+                width: 18px;
             }}
             QComboBox::down-arrow {{
                 image: none;
                 border-left: 4px solid transparent;
                 border-right: 4px solid transparent;
-                border-top: 5px solid {theme.text_secondary};
+                border-top: 5px solid {t['pillText']};
                 width: 0;
                 height: 0;
                 margin-right: 6px;
             }}
             QComboBox QAbstractItemView {{
-                background-color: {theme.bg_secondary};
-                border: 1px solid {border_dim};
-                selection-background-color: {theme.accent};
-                selection-color: {theme.bg_primary};
+                background-color: {t['menuBg']};
+                border: 1px solid {t['menuBorder']};
+                border-radius: 10px;
+                selection-background-color: {t['menuHover']};
+                selection-color: {t['pillText']};
+                color: {t['pillText']};
                 outline: none;
                 padding: 4px;
             }}
             QComboBox QAbstractItemView::item {{
-                padding: 6px 12px;
+                padding: 9px 14px;
                 min-height: 24px;
+                border-radius: 6px;
             }}
             QComboBox QAbstractItemView::item:hover {{
-                background-color: {bg_hover};
+                background-color: {t['menuHover']};
             }}
         """)
 
-        # Update combobox popup colors for the new theme
-        self.theme_combo.set_theme_colors(theme)
+        # Unlock button — buttonA→buttonB gradient, buttonText
+        self._style_unlock_idle()
 
-        # Buttons
-        button_text_color = theme.bg_primary if theme.is_dark else "#ffffff"
+        # Reset button — transparent, 1.5px resetBorder, resetText
+        self.reset_btn.setStyleSheet(f"""
+            QPushButton#danger {{
+                background-color: transparent;
+                color: {t['resetText']};
+                border: 1.5px solid {t['resetBorder']};
+                border-radius: 11px;
+                padding: 13px 0;
+                font-weight: 700;
+                font-size: 12px;
+                letter-spacing: 1px;
+            }}
+            QPushButton#danger:hover {{
+                background-color: {t['resetBorder']};
+                color: #ffffff;
+            }}
+        """)
+
+    def _style_unlock_idle(self):
+        """Idle unlock-button style — buttonA→buttonB gradient, buttonText."""
+        t = login_tokens(self.theme_manager.theme_name)
         self.unlock_btn.setStyleSheet(f"""
             QPushButton {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:1, y2:1,
-                    stop:0 {theme.accent_dim},
-                    stop:1 {theme.accent}
+                    stop:0 {t['buttonA']},
+                    stop:1 {t['buttonB']}
                 );
-                color: {button_text_color};
-                border: 1px solid {theme.accent};
-                border-radius: 8px;
-                padding: 14px 20px;
-                font-weight: 600;
+                color: {t['buttonText']};
+                border: none;
+                border-radius: 11px;
+                padding: 14px 0;
+                font-weight: 700;
                 font-size: 13px;
                 letter-spacing: 1px;
             }}
             QPushButton:hover {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:1, y2:1,
-                    stop:0 {theme.accent},
-                    stop:1 {theme.accent_dim}
+                    stop:0 {t['buttonB']},
+                    stop:1 {t['buttonA']}
                 );
-            }}
-            QPushButton:pressed {{
-                background-color: {theme.accent_dim};
             }}
         """)
 
-        self.reset_btn.setStyleSheet(f"""
-            QPushButton#danger {{
-                background-color: transparent;
-                color: {theme.accent_danger};
-                border: 1px solid {theme.accent_danger};
-                border-radius: 8px;
-                padding: 14px 20px;
-                font-weight: 600;
+    def _show_unlock_success(self):
+        """Success state: green gradient + '✓ ACCESS GRANTED' (per handoff)."""
+        self._unlock_pending = True
+        self.unlock_btn.setEnabled(False)
+        self.password_input.input.setEnabled(False)
+        self.unlock_btn.setText("✓  ACCESS GRANTED")
+        self.unlock_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #22c55e, stop:1 #16a34a
+                );
+                color: #ffffff;
+                border: none;
+                border-radius: 11px;
+                padding: 14px 0;
+                font-weight: 700;
                 font-size: 13px;
                 letter-spacing: 1px;
-            }}
-            QPushButton#danger:hover {{
-                background-color: {theme.accent_danger};
-                color: white;
-            }}
+            }
         """)
+
+    def _finish_unlock(self):
+        """Emit the unlocked vault and close, after the success flash."""
+        self.vault_unlocked.emit(self.vault)
+        self.accept()
 
     def _show_error(self, message: str):
         """Show error message."""
@@ -693,6 +768,10 @@ class LoginDialog(QDialog):
 
     def _on_unlock(self):
         """Handle unlock/create button click."""
+        # Ignore re-entry while the success flash is pending (guards against a
+        # second Enter/click during the 450ms before the window transitions).
+        if getattr(self, "_unlock_pending", False):
+            return
         password = self.password_input.text()
 
         if not password:
@@ -712,9 +791,9 @@ class LoginDialog(QDialog):
                     return
                 self.vault.initialize(password)
 
-            # Success - emit signal and close
-            self.vault_unlocked.emit(self.vault)
-            self.accept()
+            # Success — show the ACCESS GRANTED state briefly, then transition.
+            self._show_unlock_success()
+            QTimer.singleShot(450, self._finish_unlock)
 
         except VaultLockedOut as e:
             # Surface lockout messages verbatim so the user sees the cooldown.
