@@ -31,7 +31,14 @@ DEBUG = True
 
 def debug_print(msg: str):
     if DEBUG:
-        print(f"[TopologyPreview] {msg}")
+        line = f"[TopologyPreview] {msg}"
+        try:
+            print(line)
+        except UnicodeEncodeError:
+            # Windows consoles default to cp1252, which cannot encode the
+            # checkmark/emoji used in these debug lines. A debug print must
+            # never crash the app (this was the post-unlock crash).
+            print(line.encode("ascii", "replace").decode("ascii"))
 
 
 def theme_colors_to_viewer_theme(theme: ThemeColors) -> Dict[str, str]:

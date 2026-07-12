@@ -9,6 +9,15 @@ Application startup with:
 import os
 import sys
 
+# Windows consoles default to cp1252, which cannot encode the emoji/checkmark
+# characters used throughout the app's debug prints. Force UTF-8 so a stray
+# debug line never crashes startup (the post-unlock UnicodeEncodeError).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 os.environ["QTWEBENGINE_REMOTE_DEBUGGING"] = "9222"
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu"
 
