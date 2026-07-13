@@ -1965,6 +1965,30 @@ def get_themed_stylesheet(theme_name: ThemeName) -> str:
     return generate_stylesheet(THEMES[theme_name])
 
 
+def repolish_theme(root) -> None:
+    """
+    Force Qt to re-polish and repaint a widget tree after a theme change.
+
+    Setting a new stylesheet (globally or per-widget) does not always trigger
+    an immediate repaint: Qt defers the restyle until the widget next receives
+    a style-affecting event, so the old colours linger until the user hovers a
+    field. Walking the tree with unpolish()/polish()/update() forces the new
+    style to paint right away.
+
+    Call this after (re)applying theme stylesheets. `root` and all its
+    descendant QWidgets are re-polished.
+    """
+    from PyQt6.QtWidgets import QWidget
+
+    widgets = [root] + root.findChildren(QWidget)
+    for w in widgets:
+        style = w.style()
+        if style is not None:
+            style.unpolish(w)
+            style.polish(w)
+        w.update()
+
+
 def apply_widget_style(widget, style_name: str):
     """
     Apply a named style to a widget using setObjectName.

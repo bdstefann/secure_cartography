@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QGraphicsDropShadowEffect
 )
 
-from .themes import ThemeColors, ThemeManager, ThemeName, fix_all_comboboxes, StyledComboBox
+from .themes import ThemeColors, ThemeManager, ThemeName, fix_all_comboboxes, StyledComboBox, repolish_theme
 from .settings import SettingsManager, get_settings
 from sc2.scng.creds.vault import VaultLockedOut
 
@@ -702,6 +702,10 @@ class LoginDialog(QDialog):
                 color: #ffffff;
             }}
         """)
+
+        # Force an immediate repaint so the new theme paints now, not only
+        # when a field next gets a hover/style event.
+        repolish_theme(self)
 
     def _style_unlock_idle(self):
         """Idle unlock-button style — buttonA→buttonB gradient, buttonText."""

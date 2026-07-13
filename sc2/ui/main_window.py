@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont
 
 from .settings import SettingsManager, get_settings
-from .themes import ThemeManager, ThemeName, ThemeColors, StyledComboBox
+from .themes import ThemeManager, ThemeName, ThemeColors, StyledComboBox, repolish_theme
 from .widgets import (
     ConnectionPanel,
     DiscoveryOptionsPanel,
@@ -677,6 +677,14 @@ class MainWindow(QMainWindow):
         # Sync help dialog if open
         if self._help_dialog and self._help_dialog.isVisible():
             self._help_dialog.apply_theme(theme)
+
+        # Force an immediate repaint of this window and any open child windows,
+        # so the new theme paints now rather than only on the next hover/event.
+        repolish_theme(self)
+        for w in (self._config_push_dialog, self._security_window,
+                  self._map_viewer_dialog, self._help_dialog):
+            if w is not None and w.isVisible():
+                repolish_theme(w)
 
     # === Action Handlers ===
 
