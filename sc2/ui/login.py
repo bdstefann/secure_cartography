@@ -707,6 +707,18 @@ class LoginDialog(QDialog):
         # when a field next gets a hover/style event.
         repolish_theme(self)
 
+        # The login card is a translucent, frameless (layered) window. On
+        # Windows a stylesheet change alone does NOT re-present a layered
+        # window until a system event (focus change, Alt-Tab, move, hover) —
+        # this is the reported "theme only applies on printscreen/hover"
+        # symptom. Nudge the window size by 1px to force an immediate
+        # recomposite, then restore on the next event-loop tick. Only while
+        # visible (skipped during __init__, before the first show()).
+        if self.isVisible():
+            w, h = self.width(), self.height()
+            self.setFixedSize(w, h + 1)
+            QTimer.singleShot(0, lambda: self.setFixedSize(w, h))
+
     def _style_unlock_idle(self):
         """Idle unlock-button style — buttonA→buttonB gradient, buttonText."""
         t = login_tokens(self.theme_manager.theme_name)
