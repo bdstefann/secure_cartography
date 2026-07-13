@@ -74,6 +74,17 @@ QSS-first with palette fallback (`README_Style_Guide.md`). Four themes: Cyber, D
 
 The **login screen** (`sc2/ui/login.py`) does NOT use the global theme colors. It has its own high-fidelity design-token table `LOGIN_THEMES` (via `login_tokens(theme_name)`) taken verbatim from `../Prototip după poză/design_handoff_login_screen` — login-card-specific hex per theme (e.g. Nord uses a light input pill on a dark card). Edit those tokens, not the global palette, to restyle the login. The TUIASI crest logo lives at `sc2/ui/assets/tuiasi_logo.png` in a white 188×108 slot on all themes.
 
+### Live theme switching — four gotchas (all fixed; keep them working)
+
+Switching the active theme at runtime is deceptively fragile. A live switch must do all of the following, or it only *partly* applies:
+
+1. **Style each widget by object name.** A widget whose `objectName` has no rule in the relevant `apply_theme` stays on the global-QSS default and never recolours (this bit `#configPushButton` in the header — mirror `#securityButton`).
+2. **Refresh the global stylesheet too.** `_on_theme_changed` (both `login.py` and `main_window.py`) must call `app.setStyleSheet(theme_manager.stylesheet)`. Widgets that rely on the global QSS (checkboxes, radios, combos, plain labels — e.g. the Config Push Mode/Options controls) only follow the theme if the global sheet is re-applied; the local `apply_theme` sheets alone don't cover them.
+3. **Force a re-polish.** Setting a stylesheet does not repaint until the widget's next style event, so colours linger "until you hover a field". Call `themes.repolish_theme(root)` (unpolish/polish/update over the whole tree) at the end of every `_apply_theme`.
+4. **Recomposite the login window.** The login is a translucent, frameless (`WA_TranslucentBackground` + `FramelessWindowHint`) → **layered** window on Windows; a stylesheet change does not re-present it until a system event (Alt-Tab, move, hover, screenshot). After re-theming, while `isVisible()`, nudge `setFixedSize(w, h+1)` then restore on the next tick to force a recomposite. The opaque main window does not need this.
+
+**Testing caveat:** `QWidget.grab()` always renders the widget fresh from its *current* stylesheet, so grab-based screenshots CANNOT reveal repaint/recomposite bugs (gotchas 3–4) — they always look correct. Those only manifest on a live on-screen window; verify them by running the app, not by grabbing.
+
 ### Windows console encoding (crash source)
 
 The app's debug code prints emoji/checkmarks (✓, 🚫, …). Windows consoles default to **cp1252**, which cannot encode them → `UnicodeEncodeError`. This crashed the app right after vault unlock (in `TopologyPreviewPanel`'s debug print). Two guards now exist: `sc2/ui/__main__.py` reconfigures `stdout`/`stderr` to UTF-8 (`errors="replace"`) at startup, and `topology_preview_panel.py`'s `debug_print` falls back to ascii-replace. **A `print()` in GUI-path code must never be able to crash the app** — keep it non-ASCII-safe.
