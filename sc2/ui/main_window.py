@@ -118,6 +118,7 @@ class HeaderBar(QFrame):
         self.theme_combo.addItem("⚡ Cyber", ThemeName.CYBER)
         self.theme_combo.addItem("🌙 Dark", ThemeName.DARK)
         self.theme_combo.addItem("☀️ Light", ThemeName.LIGHT)
+        self.theme_combo.addItem("❄️ Nord", ThemeName.NORD)
 
         # Set current theme
         for i in range(self.theme_combo.count()):
@@ -184,7 +185,21 @@ class HeaderBar(QFrame):
                 border-color: {theme.accent_danger};
                 color: {theme.accent_danger};
             }}
-            
+
+            QPushButton#configPushButton {{
+                background-color: transparent;
+                border: 1px solid {theme.border_dim};
+                border-radius: 6px;
+                padding: 8px 16px;
+                color: {theme.text_secondary};
+                font-weight: 500;
+            }}
+
+            QPushButton#configPushButton:hover {{
+                border-color: {theme.accent_warning};
+                color: {theme.accent_warning};
+            }}
+
             QComboBox#headerThemeCombo {{
                 background-color: {theme.bg_tertiary};
                 border: 1px solid {theme.border_dim};
