@@ -12,7 +12,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QFrame, QScrollArea, QSizePolicy, QSpacerItem,
-    QSplitter
+    QSplitter, QApplication
 )
 from PyQt6.QtGui import QFont
 
@@ -559,6 +559,14 @@ class MainWindow(QMainWindow):
         """Handle theme change from header."""
         self.theme_manager.set_theme(theme_name)
         self.settings.set_theme(theme_name)
+        # Refresh the application-wide stylesheet too. Widgets that rely on the
+        # global QSS (checkboxes, radio buttons, combo boxes, plain labels —
+        # e.g. the Options/Mode controls in the Config Push panel) do NOT get a
+        # local apply_theme() sheet, so without this they stay stuck on the
+        # startup theme when the theme is switched from the header.
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(self.theme_manager.stylesheet)
         self._apply_theme()
 
     def _apply_theme(self):
